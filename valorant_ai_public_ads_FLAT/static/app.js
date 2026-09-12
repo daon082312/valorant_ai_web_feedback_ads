@@ -173,6 +173,36 @@ async function sendFeedback(payload) {
     return data;
 }
 
+async function saveAnalysisHistory(data, fileName) {
+    try {
+        const response = await fetch("/api/history", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            credentials: "same-origin",
+            body: JSON.stringify({
+                file_name: fileName || "영상",
+                analysis: data
+            })
+        });
+
+        if (!response.ok) {
+            let detail = "";
+            try {
+                const body = await response.json();
+                detail = body.detail || "";
+            } catch (_) {
+                // History saving is optional and must not break analysis display.
+            }
+            console.warn("분석 기록 저장 실패", response.status, detail);
+            return false;
+        }
+        return true;
+    } catch (error) {
+        console.warn("분석 기록 저장 실패", error);
+        return false;
+    }
+}
+
 function renderScores(scores) {
     const labels = {
         aim: "조준 (Aim)",
@@ -397,9 +427,13 @@ analyzeBtn.addEventListener("click", async () => {
         }
 
         renderResult(data);
-        statusBox.textContent = data.usage && data.usage.premium
+        const historySaved = await saveAnalysisHistory(data, selectedFile?.name || "영상");
+        const baseStatus = data.usage && data.usage.premium
             ? `분석 완료 · ${data.model_used || "Gemini"} · ${data.analysis_fps || 1} FPS · PREMIUM`
             : `분석 완료 · ${data.model_used || "Gemini"} · ${data.analysis_fps || 1} FPS`;
+        statusBox.textContent = historySaved
+            ? `${baseStatus} · 기록 저장됨`
+            : baseStatus;
     } catch (e) {
         statusBox.textContent = `오류: ${e.message}`;
     } finally {
