@@ -13,11 +13,27 @@
       crossorigin="anonymous"></script>
     {% endif %}
 
+    <script src="/static/ads.js"></script>
+
     <link rel="stylesheet" href="/static/style.css">
     <link rel="stylesheet" href="/static/auth.css">
     {% block head %}{% endblock %}
 </head>
 <body>
+    <div id="adblockBait" class="adsbox ad-banner ad-unit advertisement" aria-hidden="true"></div>
+
+    <div id="adblockGate" class="adblock-gate" role="dialog" aria-modal="true" aria-labelledby="adblockTitle">
+        <div class="adblock-card">
+            <div class="eyebrow">AD BLOCKER DETECTED</div>
+            <h1 id="adblockTitle" class="adblock-title">광고 차단을 해제해 주세요.</h1>
+            <p>
+                VALORANT AI Coach는 광고 수익으로 무료 분석 서비스를 운영합니다.
+                이 사이트를 광고 차단 허용 목록에 추가한 뒤 새로고침해 주세요.
+            </p>
+            <button type="button" class="primary adblock-reload" onclick="window.location.reload()">새로고침</button>
+        </div>
+    </div>
+
     <nav class="nav">
         <a class="brand" href="/">VALORANT AI COACH</a>
         <div class="nav-links">
@@ -51,6 +67,48 @@
 
         <p class="copyright">© 2026 VALORANT AI Coach</p>
     </footer>
+
+    <script>
+    (function () {
+        function activateAdblockGate() {
+            document.documentElement.classList.add("adblock-blocked");
+            document.body.classList.add("adblock-blocked");
+            const gate = document.getElementById("adblockGate");
+            if (gate) gate.classList.add("active");
+        }
+
+        function detectAdblock() {
+            const bait = document.getElementById("adblockBait");
+            let baitBlocked = false;
+
+            if (!bait) {
+                baitBlocked = true;
+            } else {
+                const style = window.getComputedStyle(bait);
+                baitBlocked = (
+                    bait.offsetHeight === 0 ||
+                    bait.offsetWidth === 0 ||
+                    style.display === "none" ||
+                    style.visibility === "hidden"
+                );
+            }
+
+            const baitScriptBlocked = window.__valorantAdsBaitLoaded !== true;
+
+            if (baitBlocked || baitScriptBlocked) {
+                activateAdblockGate();
+            }
+        }
+
+        if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", function () {
+                window.setTimeout(detectAdblock, 250);
+            });
+        } else {
+            window.setTimeout(detectAdblock, 250);
+        }
+    })();
+    </script>
 
     <script>
     (async function () {
