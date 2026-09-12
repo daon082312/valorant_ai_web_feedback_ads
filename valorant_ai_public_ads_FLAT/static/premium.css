@@ -70,26 +70,75 @@
     text-align: center;
     margin-top: 22px;
     padding: 14px 16px;
+    border: 0;
     border-radius: 10px;
     background: #f6d365;
     color: #12151b;
     font-weight: 900;
+    cursor: pointer;
 }
+
+.premium-button { width: 100%; }
+.premium-button:disabled { opacity: .55; cursor: wait; }
 
 .premium-cta-inline {
     width: min(260px, 100%);
     margin: 18px auto 0;
 }
 
-.premium-active {
+.premium-active,
+.premium-billing-status,
+.premium-message {
     margin-top: 22px;
     border-radius: 10px;
     padding: 14px 16px;
-    text-align: center;
     background: rgba(246, 211, 101, .10);
     border: 1px solid rgba(246, 211, 101, .38);
     color: #f6d365;
-    font-weight: 900;
+    font-weight: 800;
+    line-height: 1.55;
+}
+
+.premium-message-success {
+    border-color: rgba(90, 220, 150, .45);
+    color: #94e6b8;
+    background: rgba(90, 220, 150, .08);
+}
+
+.premium-message-error,
+.premium-error {
+    color: #ff9aa3;
+}
+
+.premium-subscribe-box { margin-top: 18px; }
+
+.premium-consent {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    color: #cbd2dc;
+    line-height: 1.6;
+    font-size: 14px;
+}
+
+.premium-consent input {
+    margin-top: 5px;
+    flex: 0 0 auto;
+}
+
+.premium-error {
+    min-height: 22px;
+    margin-top: 10px;
+    font-size: 13px;
+}
+
+.premium-cancel {
+    width: 100%;
+    margin-top: 14px;
+    padding: 12px 14px;
+    border: 1px solid #46505f;
+    background: transparent;
+    color: #c6ccd6;
 }
 
 .premium-note {
