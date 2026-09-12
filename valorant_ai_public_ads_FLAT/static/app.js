@@ -11,12 +11,34 @@ let selectedOverallRating = null;
 
 async function refreshUsage() {
     try {
-        const r = await fetch("/usage");
+        const r = await fetch("/usage", {credentials: "same-origin"});
         const data = await r.json();
-        usageBox.textContent = `내 오늘 남은 무료 분석: ${data.remaining} / ${data.daily_limit}`;
+
+        if (r.status === 401) {
+            usageBox.innerHTML = '분석하려면 <a href="/login">로그인</a>해 주세요.';
+            analyzeBtn.disabled = true;
+            return;
+        }
+
+        if (!r.ok) {
+            throw new Error("사용 가능 횟수 확인 실패");
+        }
+
+        const accountRemaining = data.account_remaining ?? data.remaining;
+        const accountLimit = data.account_limit ?? data.daily_limit;
+        const ipRemaining = data.ip_remaining;
+        const ipLimit = data.ip_limit;
+
+        if (typeof ipRemaining === "number" && typeof ipLimit === "number") {
+            usageBox.textContent = `계정 남은 분석: ${accountRemaining} / ${accountLimit} · 동일 네트워크 남은 분석: ${ipRemaining} / ${ipLimit}`;
+        } else {
+            usageBox.textContent = `내 오늘 남은 무료 분석: ${data.remaining} / ${data.daily_limit}`;
+        }
+
         analyzeBtn.disabled = !selectedFile || data.remaining <= 0;
     } catch {
         usageBox.textContent = "사용 가능 횟수를 확인하지 못했습니다.";
+        analyzeBtn.disabled = true;
     }
 }
 
@@ -41,10 +63,17 @@ async function sendFeedback(payload) {
     const r = await fetch("/feedback", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
+        credentials: "same-origin",
         body: JSON.stringify(payload)
     });
     const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || "피드백 저장 실패");
+    if (!r.ok) {
+        const detail = data.detail;
+        if (detail && typeof detail === "object") {
+            throw new Error(detail.message || "피드백 저장 실패");
+        }
+        throw new Error(detail || "피드백 저장 실패");
+    }
     return data;
 }
 
@@ -194,12 +223,20 @@ analyzeBtn.addEventListener("click", async () => {
     form.append("file", selectedFile);
 
     try {
-        const r = await fetch("/analyze", {method: "POST", body: form});
+        const r = await fetch("/analyze", {
+            method: "POST",
+            credentials: "same-origin",
+            body: form
+        });
         const data = await r.json();
 
         if (!r.ok) {
             const detail = data.detail;
             if (detail && typeof detail === "object") {
+                if (detail.code === "LOGIN_REQUIRED") {
+                    statusBox.innerHTML = '로그인이 필요합니다. <a href="/login">로그인하기</a>';
+                    return;
+                }
                 throw new Error(detail.message || "분석 실패");
             }
             throw new Error(detail || "분석 실패");
