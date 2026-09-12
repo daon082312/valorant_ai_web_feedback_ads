@@ -13,6 +13,14 @@ from PIL import Image
 from dotenv import load_dotenv
 from supabase import create_client
 
+from valorant_reference import (
+    abilities_for_agent,
+    canonical_ability,
+    canonical_agent,
+    merge_agent_predictions,
+    recognize_agent_from_hud,
+)
+
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
@@ -60,13 +68,11 @@ def decode_data_url(image_data: str) -> bytes:
 def _crop_for_target(image: Image.Image, target_type: str) -> Image.Image:
     w, h = image.size
     if target_type == "agent":
-        # VALORANT ability HUD is concentrated near the bottom-centre.  This
-        # region is relatively stable across resolutions and carries strong
-        # agent-specific icon information.
-        return image.crop((int(w * 0.22), int(h * 0.68), int(w * 0.78), h))
+        # Agent learning focuses on the bottom HUD, where all four ability icons
+        # form an agent-specific visual signature.
+        return image.crop((int(w * 0.16), int(h * 0.72), int(w * 0.84), h))
 
-    # Skill recognition needs both the cast/effect area and the HUD state.
-    # Keep a larger central/lower region while excluding much of the static UI.
+    # Skill correction still keeps the cast/effect area together with the HUD.
     return image.crop((int(w * 0.10), int(h * 0.12), int(w * 0.90), h))
 
 
@@ -80,9 +86,6 @@ def extract_feature(image_bytes: bytes, target_type: str) -> list[float]:
         image = image.resize((20, 12), Image.Resampling.BILINEAR)
         arr = np.asarray(image, dtype=np.float32) / 255.0
 
-    # Appearance + simple horizontal/vertical edge information.  This is a
-    # deliberately small feature extractor so CPU inference/training stays
-    # cheap on Render.
     gray = arr.mean(axis=2)
     gx = np.diff(gray, axis=1, prepend=gray[:, :1])
     gy = np.diff(gray, axis=0, prepend=gray[:1, :])
@@ -134,9 +137,6 @@ def retrain(target_type: str) -> dict[str, Any]:
         if label and isinstance(feature, list) and feature:
             grouped[label].append([float(x) for x in feature])
 
-    # Replace learned weights for this target with weights derived from the
-    # current labelled samples. Re-labelling a sample therefore genuinely
-    # changes the trained model instead of only adding another vote.
     client.table(CENTROIDS_TABLE).delete().eq("target_type", target_type).execute()
 
     upserts = []
@@ -175,6 +175,7 @@ def train_sample(
     label: str,
     image_bytes: bytes,
     predicted_label: str = "",
+    agent_label: str = "",
 ) -> dict[str, Any]:
     client = _db_client()
     if client is None:
@@ -184,6 +185,17 @@ def train_sample(
         raise ValueError("잘못된 학습 대상입니다.")
 
     clean_label = _normalize_label(label)
+    if target_type == "agent":
+        canonical = canonical_agent(clean_label)
+        if canonical:
+            clean_label = canonical
+    elif agent_label:
+        canonical = canonical_ability(agent_label, clean_label)
+        if canonical:
+            clean_label = canonical
+        elif abilities_for_agent(agent_label):
+            raise ValueError(f"{agent_label}의 실제 스킬 이름을 선택해 주세요.")
+
     feature = extract_feature(image_bytes, target_type)
     now = datetime.now(timezone.utc).isoformat()
 
@@ -207,7 +219,11 @@ def train_sample(
     return {"ok": True, "label": clean_label, "model": status}
 
 
-def predict_feature(target_type: str, feature: list[float]) -> dict[str, Any]:
+def predict_feature(
+    target_type: str,
+    feature: list[float],
+    allowed_labels: list[str] | None = None,
+) -> dict[str, Any]:
     client = _db_client()
     if client is None:
         return {"ready": False, "reason": "not_configured"}
@@ -221,6 +237,7 @@ def predict_feature(target_type: str, feature: list[float]) -> dict[str, Any]:
         or []
     )
 
+    allowed = {str(item).casefold() for item in (allowed_labels or [])}
     candidates = []
     vector = np.asarray(feature, dtype=np.float32)
     vector_norm = float(np.linalg.norm(vector))
@@ -228,6 +245,9 @@ def predict_feature(target_type: str, feature: list[float]) -> dict[str, Any]:
         vector /= vector_norm
 
     for row in rows:
+        label = str(row.get("label") or "")
+        if allowed and label.casefold() not in allowed:
+            continue
         count = int(row.get("sample_count") or 0)
         centroid = row.get("centroid")
         if count < MIN_SAMPLES_PER_LABEL or not isinstance(centroid, list):
@@ -240,17 +260,28 @@ def predict_feature(target_type: str, feature: list[float]) -> dict[str, Any]:
             c /= c_norm
         similarity = float(np.dot(vector, c))
         candidates.append({
-            "label": str(row.get("label") or ""),
+            "label": label,
             "sample_count": count,
             "similarity": similarity,
         })
 
     candidates.sort(key=lambda item: item["similarity"], reverse=True)
-    if not candidates:
-        return {"ready": False, "reason": "needs_training", "candidates": []}
+    if len(candidates) < 2:
+        return {
+            "ready": False,
+            "reason": "needs_training",
+            "candidates": [
+                {
+                    "label": item["label"],
+                    "similarity": round(item["similarity"], 4),
+                    "sample_count": item["sample_count"],
+                }
+                for item in candidates[:5]
+            ],
+        }
 
     best = candidates[0]
-    second = candidates[1]["similarity"] if len(candidates) > 1 else 0.0
+    second = candidates[1]["similarity"]
     margin = max(0.0, best["similarity"] - second)
     support = min(1.0, math.log2(best["sample_count"] + 1) / 4.0)
     confidence = max(0.0, min(1.0, margin * 2.5 + support * 0.25))
@@ -261,6 +292,7 @@ def predict_feature(target_type: str, feature: list[float]) -> dict[str, Any]:
         "confidence": round(confidence, 3),
         "similarity": round(best["similarity"], 4),
         "sample_count": best["sample_count"],
+        "source": "user_training",
         "candidates": [
             {
                 "label": item["label"],
@@ -272,9 +304,28 @@ def predict_feature(target_type: str, feature: list[float]) -> dict[str, Any]:
     }
 
 
-def predict_image(target_type: str, image_bytes: bytes) -> dict[str, Any]:
+def predict_image(
+    target_type: str,
+    image_bytes: bytes,
+    agent_label: str = "",
+) -> dict[str, Any]:
     feature = extract_feature(image_bytes, target_type)
-    return predict_feature(target_type, feature)
+
+    if target_type == "agent":
+        learned = predict_feature(target_type, feature)
+        try:
+            reference = recognize_agent_from_hud(image_bytes)
+        except Exception as exc:
+            print(f"[ValorantReference] HUD recognition skipped: {type(exc).__name__}: {exc}")
+            reference = {"ready": False, "reason": "reference_error"}
+        return merge_agent_predictions(learned, reference)
+
+    allowed = abilities_for_agent(agent_label) if agent_label else []
+    result = predict_feature(target_type, feature, allowed_labels=allowed or None)
+    if allowed:
+        result["allowed_labels"] = allowed
+        result["agent"] = canonical_agent(agent_label) or agent_label
+    return result
 
 
 def model_status() -> dict[str, Any]:
