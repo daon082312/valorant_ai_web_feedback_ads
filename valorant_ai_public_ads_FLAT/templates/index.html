@@ -8,7 +8,9 @@
         경기 후 클립을 분석해 Aim, Movement, Positioning, Utility,
         Decision Making에 대한 구체적인 피드백을 제공합니다.
     </p>
-    <div id="usageBox" class="usage-box">사용 가능 횟수를 확인하는 중...</div>
+    <div id="usageBox" class="usage-box">
+        {% if is_premium %}PREMIUM · 분석 횟수 무제한 · 광고 없음{% else %}사용 가능 횟수를 확인하는 중...{% endif %}
+    </div>
 </header>
 
 <section class="panel">
@@ -23,6 +25,7 @@
     <div id="status" class="status"></div>
 </section>
 
+{% if not is_premium %}
 <section class="ad-wrap">
     <div class="ad-label">ADVERTISEMENT</div>
     {% if adsense_enabled and adsense_top_slot %}
@@ -37,6 +40,7 @@
     <div class="ad-placeholder">AdSense 승인 후 상단 광고가 표시됩니다.</div>
     {% endif %}
 </section>
+{% endif %}
 
 <section id="results" class="hidden">
     <div class="score-card">
@@ -63,6 +67,7 @@
         <div id="events"></div>
     </section>
 
+    {% if not is_premium %}
     <section class="ad-wrap">
         <div class="ad-label">ADVERTISEMENT</div>
         {% if adsense_enabled and adsense_result_slot %}
@@ -77,6 +82,7 @@
         <div class="ad-placeholder">AdSense 승인 후 결과 페이지 광고가 표시됩니다.</div>
         {% endif %}
     </section>
+    {% endif %}
 
     <section class="panel">
         <h2>분석 한계</h2>
