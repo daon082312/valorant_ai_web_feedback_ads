@@ -184,11 +184,21 @@ async def sitemap_xml():
 
 @app.post("/analyze")
 async def analyze(request: Request, file: UploadFile = File(...)):
-    ip = get_client_ip(request)
-    lock = await get_ip_lock(ip)
+    used_before = _get_used_count(request)
 
-    async with lock:
-        remaining_before = get_remaining(ip, DAILY_LIMIT)
+if used_before >= DAILY_LIMIT:
+    raise HTTPException(
+        status_code=429,
+        detail={
+            "code": "USER_DAILY_LIMIT",
+            "message": (
+                f"오늘 무료 분석 횟수 "
+                f"{DAILY_LIMIT}회를 모두 사용했습니다."
+            ),
+            "remaining": 0,
+            "daily_limit": DAILY_LIMIT,
+        },
+    )
         if remaining_before <= 0:
             raise HTTPException(
                 status_code=429,
@@ -224,15 +234,33 @@ async def analyze(request: Request, file: UploadFile = File(...)):
 
             result = analyze_video(temp_path)
 
-            used_today = record_success(ip)
-            remaining_after = max(DAILY_LIMIT - used_today, 0)
+            used_after = used_before + 1
 
-            result["analysis_id"] = uuid.uuid4().hex
-            result["usage"] = {
-                "remaining": remaining_after,
-                "daily_limit": DAILY_LIMIT,
-            }
-            return result
+remaining_after = max(
+    DAILY_LIMIT - used_after,
+    0,
+)
+
+result["usage"] = {
+    "remaining": remaining_after,
+    "daily_limit": DAILY_LIMIT,
+}
+
+response = JSONResponse(
+    status_code=200,
+    content=result,
+)
+
+response.set_cookie(
+    key=USAGE_COOKIE_NAME,
+    value=_make_usage_cookie(used_after),
+    max_age=60 * 60 * 24 * 7,
+    httponly=True,
+    secure=True,
+    samesite="lax",
+)
+
+return response
 
         except HTTPException:
             raise
