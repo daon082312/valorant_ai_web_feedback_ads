@@ -27,6 +27,44 @@ class SaveAnalysisRequest(BaseModel):
     analysis: dict
 
 
+def _history_error_message(exc: Exception) -> str:
+    text = str(exc)
+    lower = text.lower()
+
+    if (
+        "pgrst205" in lower
+        or "could not find the table" in lower
+        or ("analysis_history" in lower and "schema cache" in lower)
+        or ("relation" in lower and "analysis_history" in lower)
+    ):
+        return (
+            "분석 저장 테이블이 아직 준비되지 않았습니다. Supabase SQL Editor에서 "
+            "최신 supabase_analysis_history.sql 전체를 실행해 주세요."
+        )
+
+    if (
+        "permission denied" in lower
+        or "row-level security" in lower
+        or "42501" in lower
+        or "policy" in lower
+    ):
+        return (
+            "분석 저장 권한 설정이 이전 버전입니다. Supabase SQL Editor에서 "
+            "최신 supabase_analysis_history.sql 전체를 다시 실행해 주세요."
+        )
+
+    if "on conflict" in lower or "42p10" in lower or "unique" in lower:
+        return (
+            "분석 저장 테이블의 키 설정이 이전 버전입니다. Supabase SQL Editor에서 "
+            "최신 supabase_analysis_history.sql 전체를 다시 실행해 주세요."
+        )
+
+    if "jwt" in lower or "session" in lower or "auth" in lower:
+        return "로그인 세션을 확인하지 못했습니다. 다시 로그인한 뒤 시도해 주세요."
+
+    return "저장된 분석을 불러오지 못했습니다."
+
+
 def build_history_router(get_auth_context, attach_refreshed_session, public_base_url: str) -> APIRouter:
     router = APIRouter()
 
@@ -75,12 +113,21 @@ def build_history_router(get_auth_context, attach_refreshed_session, public_base
             )
 
         try:
-            items = await asyncio.to_thread(list_analyses, auth.user_id, limit)
+            items = await asyncio.to_thread(
+                list_analyses,
+                auth.user_id,
+                auth.access_token,
+                auth.refresh_token,
+                limit,
+            )
             response = JSONResponse({"items": items})
             return attach_refreshed_session(response, auth)
         except Exception as exc:
             print(f"[History] 목록 조회 실패: {type(exc).__name__}: {exc}")
-            return JSONResponse({"detail": "저장된 분석을 불러오지 못했습니다."}, status_code=503)
+            return JSONResponse(
+                {"detail": _history_error_message(exc)},
+                status_code=503,
+            )
 
     @router.get("/api/history/{analysis_id}")
     async def history_detail(request: Request, analysis_id: str):
@@ -91,14 +138,20 @@ def build_history_router(get_auth_context, attach_refreshed_session, public_base
             return JSONResponse({"detail": "분석 저장 기능이 아직 설정되지 않았습니다."}, status_code=503)
 
         try:
-            item = await asyncio.to_thread(get_analysis, auth.user_id, analysis_id[:100])
+            item = await asyncio.to_thread(
+                get_analysis,
+                auth.user_id,
+                analysis_id[:100],
+                auth.access_token,
+                auth.refresh_token,
+            )
             if not item:
                 return JSONResponse({"detail": "저장된 분석을 찾을 수 없습니다."}, status_code=404)
             response = JSONResponse(item)
             return attach_refreshed_session(response, auth)
         except Exception as exc:
             print(f"[History] 상세 조회 실패: {type(exc).__name__}: {exc}")
-            return JSONResponse({"detail": "저장된 분석을 불러오지 못했습니다."}, status_code=503)
+            return JSONResponse({"detail": _history_error_message(exc)}, status_code=503)
 
     @router.post("/api/history")
     async def history_save(request: Request, payload: SaveAnalysisRequest):
@@ -115,7 +168,6 @@ def build_history_router(get_auth_context, attach_refreshed_session, public_base
         if not analysis_id:
             return JSONResponse({"detail": "analysis_id가 없습니다."}, status_code=400)
 
-        # Prevent accidentally storing unexpectedly huge client payloads.
         if len(json.dumps(payload.analysis, ensure_ascii=False)) > 300_000:
             return JSONResponse({"detail": "분석 결과가 너무 큽니다."}, status_code=413)
 
@@ -125,12 +177,14 @@ def build_history_router(get_auth_context, attach_refreshed_session, public_base
                 auth.user_id,
                 payload.file_name,
                 payload.analysis,
+                auth.access_token,
+                auth.refresh_token,
             )
             response = JSONResponse({"ok": True, "analysis_id": analysis_id})
             return attach_refreshed_session(response, auth)
         except Exception as exc:
             print(f"[History] 저장 실패: {type(exc).__name__}: {exc}")
-            return JSONResponse({"detail": "분석 기록 저장에 실패했습니다."}, status_code=503)
+            return JSONResponse({"detail": _history_error_message(exc)}, status_code=503)
 
     @router.delete("/api/history/{analysis_id}")
     async def history_delete(request: Request, analysis_id: str):
@@ -144,11 +198,17 @@ def build_history_router(get_auth_context, attach_refreshed_session, public_base
             return JSONResponse({"detail": "분석 저장 기능이 아직 설정되지 않았습니다."}, status_code=503)
 
         try:
-            deleted = await asyncio.to_thread(delete_analysis, auth.user_id, analysis_id[:100])
+            deleted = await asyncio.to_thread(
+                delete_analysis,
+                auth.user_id,
+                analysis_id[:100],
+                auth.access_token,
+                auth.refresh_token,
+            )
             response = JSONResponse({"ok": True, "deleted": deleted})
             return attach_refreshed_session(response, auth)
         except Exception as exc:
             print(f"[History] 삭제 실패: {type(exc).__name__}: {exc}")
-            return JSONResponse({"detail": "분석 기록 삭제에 실패했습니다."}, status_code=503)
+            return JSONResponse({"detail": _history_error_message(exc)}, status_code=503)
 
     return router
