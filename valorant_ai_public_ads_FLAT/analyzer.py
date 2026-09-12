@@ -121,12 +121,6 @@ def _truthy_env(name: str, default: bool = False) -> bool:
 
 
 def _models() -> list[str]:
-    """Use only the cheapest model by default.
-
-    Existing GEMINI_MODELS values are ignored unless the operator explicitly
-    enables expensive fallback. This prevents a temporary Lite failure from
-    unexpectedly generating a much more expensive 3.x request.
-    """
     primary = os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_PRIMARY_MODEL).strip()
     if not primary:
         primary = DEFAULT_PRIMARY_MODEL
@@ -149,15 +143,6 @@ def _models() -> list[str]:
             seen.add(model)
             ordered.append(model)
     return ordered
-
-
-def _video_fps() -> float:
-    raw = os.getenv("VIDEO_ANALYSIS_FPS", "1").strip()
-    try:
-        value = float(raw)
-    except ValueError:
-        value = 1.0
-    return min(24.0, max(0.1, value))
 
 
 def _wait_for_file(client: genai.Client, uploaded):
@@ -191,47 +176,29 @@ def _build_prompt(calibration: dict) -> str:
     return f"{PROMPT}\n\n{calibration_prompt[:2200]}"
 
 
-def _video_part(uploaded, fps: float) -> types.Part:
-    uri = getattr(uploaded, "uri", None)
-    mime_type = getattr(uploaded, "mime_type", None) or "video/mp4"
-    if not uri:
-        raise RuntimeError("Gemini 업로드 영상 URI를 찾을 수 없습니다.")
-
-    return types.Part(
-        file_data=types.FileData(file_uri=uri, mime_type=mime_type),
-        video_metadata=types.VideoMetadata(fps=fps),
-    )
-
-
 def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
     errors_seen: list[str] = []
-    fps = _video_fps()
     prompt = _build_prompt(calibration)
-    video_part = _video_part(uploaded, fps)
 
     for model in _models():
         print(
-            f"[Gemini] {model} 시도 · economy · video={fps:g} FPS · low-res · "
+            f"[Gemini] {model} 시도 · economy · File API default video processing · "
             f"feedback n={calibration.get('sample_size', 0)}"
         )
 
         for attempt in range(1, 3):
             try:
+                # Keep the video request deliberately simple for Gemini 2.5.
+                # File API already processes video at its native/default sampling,
+                # so do not attach Gemini-3-only media_resolution or custom
+                # VideoMetadata settings here.
                 response = client.models.generate_content(
                     model=model,
-                    contents=types.Content(
-                        parts=[video_part, types.Part(text=prompt)]
-                    ),
+                    contents=[uploaded, prompt],
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_schema=ValorantAnalysis,
                         temperature=0.15,
-                        media_resolution=(
-                            types.MediaResolution.MEDIA_RESOLUTION_LOW
-                        ),
-                        # Flash-Lite already has thinking off by default.
-                        # Do not force ThinkingConfig here; keeping the request
-                        # simpler improves compatibility across SDK/API versions.
                         max_output_tokens=1800,
                     ),
                 )
@@ -245,15 +212,13 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                     .model_dump()
                 )
 
-                # Prompt-level limits are safer than strict schema maxItems for
-                # structured generation. Trim any overlong result after validation.
                 result["events"] = list(result.get("events") or [])[:3]
                 result["top_priorities"] = list(result.get("top_priorities") or [])[:2]
                 result["limitations"] = list(result.get("limitations") or [])[:2]
 
                 result["model_used"] = model
-                result["analysis_fps"] = fps
-                result["media_resolution"] = "low"
+                result["analysis_fps"] = 1
+                result["media_resolution"] = "default"
                 result["economy_mode"] = True
                 result["feedback_calibration_used"] = bool(
                     calibration.get("prompt")
@@ -296,8 +261,6 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                 ):
                     break
 
-                # Treat other model/API incompatibilities as a model failure so
-                # the app returns a controlled analysis error instead of crashing.
                 break
 
             except (ValueError, RuntimeError) as exc:
