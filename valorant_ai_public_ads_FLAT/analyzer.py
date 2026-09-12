@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
+from fastapi import HTTPException
 from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, Field
@@ -122,13 +123,10 @@ def _truthy_env(name: str, default: bool = False) -> bool:
 
 
 def _models() -> list[str]:
-    """Prefer the cheapest model, with one still-low-cost stable fallback."""
     primary = os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_PRIMARY_MODEL).strip()
     if not primary:
         primary = DEFAULT_PRIMARY_MODEL
 
-    # Always keep these known supported low-cost models available. This also
-    # protects against a stale/invalid GEMINI_PRIMARY_MODEL environment value.
     candidates = [primary, DEFAULT_PRIMARY_MODEL, LOW_COST_FALLBACK_MODEL]
 
     if _truthy_env("ALLOW_EXPENSIVE_MODEL_FALLBACK", False):
@@ -161,7 +159,6 @@ def _empty_calibration() -> dict:
 
 
 def _safe_feedback_calibration() -> dict:
-    """Feedback improves later analyses, but must never break an analysis."""
     try:
         value = get_feedback_calibration()
         return value if isinstance(value, dict) else _empty_calibration()
@@ -197,8 +194,27 @@ def _build_prompt(calibration: dict) -> str:
     calibration_prompt = str(calibration.get("prompt") or "").strip()
     if not calibration_prompt:
         return PROMPT
-
     return f"{PROMPT}\n\n{calibration_prompt[:2200]}"
+
+
+def _safe_failure_detail(errors_seen: list[str]) -> tuple[int, str]:
+    text = "\n".join(errors_seen)
+    lower = text.lower()
+
+    if "429" in text or "resource_exhausted" in lower or "quota" in lower:
+        return 503, "Gemini API 사용 한도 또는 결제 잔액 문제입니다. 무료 분석 횟수는 차감되지 않았습니다."
+    if "403" in text or "permission_denied" in lower:
+        return 503, "Gemini API 키 또는 프로젝트 권한 문제입니다. Render의 GEMINI_API_KEY 설정을 확인해 주세요."
+    if "404" in text or "not_found" in lower or "not found" in lower:
+        return 503, "현재 설정된 Gemini 모델을 사용할 수 없습니다. 저가형 대체 모델까지 시도했지만 실패했습니다."
+    if "400" in text or "invalid_argument" in lower:
+        return 503, "Gemini가 영상 분석 요청 형식을 거부했습니다. Render 로그의 '[Gemini] API 오류' 한 줄을 확인해 주세요."
+    if "validation" in lower or "json" in lower or "빈 응답" in text:
+        return 503, "Gemini 응답 형식 검증에 실패했습니다. 저가형 대체 모델까지 시도했습니다."
+    if "503" in text or "unavailable" in lower:
+        return 503, "Gemini 서버가 일시적으로 사용할 수 없습니다. 무료 분석 횟수는 차감되지 않았습니다."
+
+    return 503, "Gemini 영상 분석 단계에서 오류가 발생했습니다. Render 로그에서 '[Gemini]'로 시작하는 줄을 확인해 주세요."
 
 
 def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
@@ -220,7 +236,6 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                         response_mime_type="application/json",
                         response_schema=ValorantAnalysis,
                         temperature=0.15,
-                        max_output_tokens=1800,
                     ),
                 )
 
@@ -244,7 +259,6 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                 result["events"] = list(result.get("events") or [])[:3]
                 result["top_priorities"] = list(result.get("top_priorities") or [])[:2]
                 result["limitations"] = list(result.get("limitations") or [])[:2]
-
                 result["model_used"] = model
                 result["analysis_fps"] = 1
                 result["media_resolution"] = "default"
@@ -281,8 +295,6 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                         continue
                     break
 
-                # 400/404/other model-specific errors move immediately to the
-                # next cheap model instead of failing the whole user request.
                 break
 
             except (ValueError, RuntimeError) as exc:
@@ -290,26 +302,43 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                 print(f"[Gemini] 응답 검증 오류: {type(exc).__name__}: {exc}")
                 break
 
-    details = "\n\n".join(errors_seen[-3:])
-    raise RuntimeError(
-        "저비용 Gemini 분석 모델을 현재 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.\n\n"
-        f"{details}"
-    )
+    status_code, detail = _safe_failure_detail(errors_seen)
+    raise HTTPException(status_code=status_code, detail=detail)
 
 
 def analyze_video(video_path: Path) -> dict:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY가 없습니다.")
+        raise HTTPException(
+            status_code=503,
+            detail="Render에 GEMINI_API_KEY가 설정되어 있지 않습니다.",
+        )
 
     client = genai.Client(api_key=api_key)
     uploaded = None
 
     try:
         calibration = _safe_feedback_calibration()
-        uploaded = client.files.upload(file=video_path)
-        uploaded = _wait_for_file(client, uploaded)
+
+        try:
+            uploaded = client.files.upload(file=video_path)
+            uploaded = _wait_for_file(client, uploaded)
+        except HTTPException:
+            raise
+        except errors.APIError as exc:
+            text = str(exc)
+            print(f"[Gemini] 파일 업로드 API 오류: {text}")
+            status_code, detail = _safe_failure_detail([text])
+            raise HTTPException(status_code=status_code, detail=detail) from exc
+        except Exception as exc:
+            print(f"[Gemini] 파일 처리 오류: {type(exc).__name__}: {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail="Gemini에 영상을 업로드하거나 처리하는 단계에서 오류가 발생했습니다.",
+            ) from exc
+
         return _generate(client, uploaded, calibration)
+
     finally:
         if uploaded is not None:
             try:
