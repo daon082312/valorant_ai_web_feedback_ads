@@ -22,6 +22,37 @@ function formatFileSize(bytes) {
     return `${gb.toFixed(2)} GB`;
 }
 
+async function readJsonResponse(response, label = "서버") {
+    const contentType = (response.headers.get("content-type") || "").toLowerCase();
+    const text = await response.text();
+
+    if (contentType.includes("application/json")) {
+        try {
+            return text ? JSON.parse(text) : {};
+        } catch (_) {
+            throw new Error(`${label}가 잘못된 JSON을 반환했습니다. (HTTP ${response.status})`);
+        }
+    }
+
+    const looksLikeHtml = /^\s*<!doctype\s+html|^\s*<html/i.test(text);
+    if (looksLikeHtml) {
+        if (response.status === 502) {
+            throw new Error("서버가 일시적으로 응답하지 못했습니다. Render 로그에서 502/SIGKILL 여부를 확인해 주세요.");
+        }
+        if (response.status === 503) {
+            throw new Error("서버가 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.");
+        }
+        throw new Error(`${label}가 HTML 오류 페이지를 반환했습니다. (HTTP ${response.status})`);
+    }
+
+    const preview = text.trim().replace(/\s+/g, " ").slice(0, 180);
+    throw new Error(
+        preview
+            ? `${label} 응답 오류 (HTTP ${response.status}): ${preview}`
+            : `${label} 응답 오류 (HTTP ${response.status})`
+    );
+}
+
 function resetOverallFeedback() {
     selectedOverallRating = null;
 
@@ -46,13 +77,7 @@ function resetOverallFeedback() {
 async function refreshUsage() {
     try {
         const r = await fetch("/usage", {credentials: "same-origin"});
-        let data = null;
-
-        try {
-            data = await r.json();
-        } catch (_) {
-            throw new Error(`사용량 서버 응답 오류 (HTTP ${r.status})`);
-        }
+        const data = await readJsonResponse(r, "사용량 서버");
 
         if (r.status === 401) {
             premiumUnlimited = false;
@@ -137,7 +162,7 @@ async function sendFeedback(payload) {
         credentials: "same-origin",
         body: JSON.stringify(payload)
     });
-    const data = await r.json();
+    const data = await readJsonResponse(r, "피드백 서버");
     if (!r.ok) {
         const detail = data.detail;
         if (detail && typeof detail === "object") {
@@ -337,7 +362,7 @@ analyzeBtn.addEventListener("click", async () => {
             credentials: "same-origin",
             body: form
         });
-        const data = await r.json();
+        const data = await readJsonResponse(r, "분석 서버");
 
         if (!r.ok) {
             const detail = data.detail;
@@ -346,15 +371,15 @@ analyzeBtn.addEventListener("click", async () => {
                     statusBox.innerHTML = '로그인이 필요합니다. <a href="/login">로그인하기</a>';
                     return;
                 }
-                throw new Error(detail.message || "분석 실패");
+                throw new Error(detail.message || detail.code || "분석 실패");
             }
             throw new Error(detail || "분석 실패");
         }
 
         renderResult(data);
         statusBox.textContent = data.usage && data.usage.premium
-            ? `분석 완료 · ${data.model_used || "Gemini"} · PREMIUM`
-            : `분석 완료 · ${data.model_used || "Gemini"}`;
+            ? `분석 완료 · ${data.model_used || "Gemini"} · ${data.analysis_fps || 1} FPS · PREMIUM`
+            : `분석 완료 · ${data.model_used || "Gemini"} · ${data.analysis_fps || 1} FPS`;
     } catch (e) {
         statusBox.textContent = `오류: ${e.message}`;
     } finally {
