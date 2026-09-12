@@ -13,13 +13,16 @@
       crossorigin="anonymous"></script>
     {% endif %}
 
+    {% if adblock_enabled %}
     <script src="/static/ads.js"></script>
+    {% endif %}
 
     <link rel="stylesheet" href="/static/style.css">
     <link rel="stylesheet" href="/static/auth.css">
     {% block head %}{% endblock %}
 </head>
 <body>
+    {% if adblock_enabled %}
     <div id="adblockBait" class="adsbox ad-banner ad-unit advertisement" aria-hidden="true"></div>
 
     <div id="adblockGate" class="adblock-gate" role="dialog" aria-modal="true" aria-labelledby="adblockTitle">
@@ -27,16 +30,19 @@
             <div class="eyebrow">AD BLOCKER DETECTED</div>
             <h1 id="adblockTitle" class="adblock-title">광고 차단을 해제해 주세요.</h1>
             <p>
-                VALORANT AI Coach는 광고 수익으로 무료 분석 서비스를 운영합니다.
-                이 사이트를 광고 차단 허용 목록에 추가한 뒤 새로고침해 주세요.
+                무료 플랜은 광고 수익으로 운영됩니다. 이 사이트를 광고 차단 허용 목록에 추가한 뒤
+                새로고침해 주세요. 광고 없는 이용을 원하면 Premium을 사용할 수 있습니다.
             </p>
+            <a class="premium-cta premium-cta-inline" href="/premium">Premium 보기</a>
             <button type="button" class="primary adblock-reload" onclick="window.location.reload()">새로고침</button>
         </div>
     </div>
+    {% endif %}
 
     <nav class="nav">
         <a class="brand" href="/">VALORANT AI COACH</a>
         <div class="nav-links">
+            <a href="/premium" class="premium-nav-link">Premium</a>
             <a href="/guide">사용 가이드</a>
             <a href="/about">About</a>
             <span id="authNav" class="auth-nav">
@@ -52,6 +58,7 @@
 
     <footer class="footer">
         <div class="footer-links">
+            <a href="/premium">Premium</a>
             <a href="/about">About</a>
             <a href="/privacy">Privacy</a>
             <a href="/terms">Terms</a>
@@ -68,6 +75,7 @@
         <p class="copyright">© 2026 VALORANT AI Coach</p>
     </footer>
 
+    {% if adblock_enabled %}
     <script>
     (function () {
         function activateAdblockGate() {
@@ -109,6 +117,7 @@
         }
     })();
     </script>
+    {% endif %}
 
     <script>
     (async function () {
@@ -122,6 +131,13 @@
             if (!data.authenticated) return;
 
             root.textContent = "";
+
+            if (data.premium) {
+                const badge = document.createElement("span");
+                badge.className = "premium-badge";
+                badge.textContent = "PREMIUM";
+                root.appendChild(badge);
+            }
 
             const email = document.createElement("span");
             email.className = "nav-email";
