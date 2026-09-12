@@ -106,7 +106,9 @@
 
         const alwaysModal = link.dataset.modalPage === "always"
             || url.pathname === "/history"
-            || url.pathname === "/premium";
+            || url.pathname === "/premium"
+            || url.pathname === "/guide"
+            || url.pathname === "/about";
         const analysisModal = isAnalysisRunning() && Object.hasOwn(titleByPath, url.pathname);
 
         if (!alwaysModal && !analysisModal) return;
