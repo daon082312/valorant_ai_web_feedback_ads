@@ -15,6 +15,58 @@ body { margin: 0; background: #0b0e13; }
 a { color: inherit; }
 .container { width: min(var(--max), calc(100% - 32px)); margin: auto; padding: 42px 0 56px; }
 
+/* Ad-block detection bait: visible to layout, but placed far off-screen. */
+.adsbox,
+.ad-banner,
+.ad-unit,
+.advertisement {
+    position: absolute;
+    left: -10000px;
+    top: -10000px;
+    width: 2px;
+    height: 2px;
+    pointer-events: none;
+}
+
+.adblock-gate {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 999999;
+    background: rgba(7, 9, 13, .98);
+    padding: 24px;
+    place-items: center;
+}
+.adblock-gate.active { display: grid; }
+.adblock-card {
+    width: min(560px, 100%);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 30px;
+    text-align: center;
+    box-shadow: 0 28px 80px rgba(0,0,0,.45);
+}
+.adblock-title {
+    font-size: clamp(30px, 7vw, 46px);
+    margin: 10px 0 14px;
+}
+.adblock-card p {
+    color: var(--muted);
+    line-height: 1.7;
+    margin: 0 auto;
+    max-width: 460px;
+}
+.adblock-reload { max-width: 260px; }
+html.adblock-blocked,
+body.adblock-blocked {
+    overflow: hidden !important;
+}
+body.adblock-blocked > *:not(#adblockGate):not(#adblockBait) {
+    pointer-events: none !important;
+    user-select: none;
+}
+
 .nav {
     min-height: 62px;
     display: flex;
