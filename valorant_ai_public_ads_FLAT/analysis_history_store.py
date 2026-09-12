@@ -57,7 +57,7 @@ def save_analysis(user_id: str, file_name: str, result: dict[str, Any]) -> dict:
 
     response = client.table(TABLE_NAME).upsert(
         row,
-        on_conflict="analysis_id",
+        on_conflict="user_id,analysis_id",
     ).execute()
 
     data = list(response.data or [])
