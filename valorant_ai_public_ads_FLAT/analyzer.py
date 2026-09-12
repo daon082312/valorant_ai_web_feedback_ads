@@ -111,6 +111,7 @@ PROMPT = """
 
 
 DEFAULT_PRIMARY_MODEL = "gemini-2.5-flash-lite"
+LOW_COST_FALLBACK_MODEL = "gemini-3.1-flash-lite"
 
 
 def _truthy_env(name: str, default: bool = False) -> bool:
@@ -121,11 +122,14 @@ def _truthy_env(name: str, default: bool = False) -> bool:
 
 
 def _models() -> list[str]:
+    """Prefer the cheapest model, with one still-low-cost stable fallback."""
     primary = os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_PRIMARY_MODEL).strip()
     if not primary:
         primary = DEFAULT_PRIMARY_MODEL
 
-    candidates = [primary]
+    # Always keep these known supported low-cost models available. This also
+    # protects against a stale/invalid GEMINI_PRIMARY_MODEL environment value.
+    candidates = [primary, DEFAULT_PRIMARY_MODEL, LOW_COST_FALLBACK_MODEL]
 
     if _truthy_env("ALLOW_EXPENSIVE_MODEL_FALLBACK", False):
         env_models = os.getenv("GEMINI_MODELS", "").strip()
@@ -277,6 +281,8 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                         continue
                     break
 
+                # 400/404/other model-specific errors move immediately to the
+                # next cheap model instead of failing the whole user request.
                 break
 
             except (ValueError, RuntimeError) as exc:
@@ -284,7 +290,7 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                 print(f"[Gemini] 응답 검증 오류: {type(exc).__name__}: {exc}")
                 break
 
-    details = "\n\n".join(errors_seen[-2:])
+    details = "\n\n".join(errors_seen[-3:])
     raise RuntimeError(
         "저비용 Gemini 분석 모델을 현재 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.\n\n"
         f"{details}"
