@@ -8,6 +8,7 @@ const results = document.getElementById("results");
 let selectedFile = null;
 let currentAnalysis = null;
 let selectedOverallRating = null;
+let premiumUnlimited = false;
 
 async function refreshUsage() {
     try {
@@ -21,7 +22,9 @@ async function refreshUsage() {
         }
 
         if (r.status === 401) {
+            premiumUnlimited = false;
             usageBox.innerHTML = '분석하려면 <a href="/login">로그인</a>해 주세요.';
+            usageBox.classList.remove("premium-usage");
             analyzeBtn.disabled = true;
             return;
         }
@@ -33,6 +36,17 @@ async function refreshUsage() {
             }
             throw new Error(detail || `사용 가능 횟수 확인 실패 (HTTP ${r.status})`);
         }
+
+        if (data.premium && data.unlimited) {
+            premiumUnlimited = true;
+            usageBox.textContent = "PREMIUM · 분석 횟수 무제한 · 광고 없음";
+            usageBox.classList.add("premium-usage");
+            analyzeBtn.disabled = !selectedFile;
+            return;
+        }
+
+        premiumUnlimited = false;
+        usageBox.classList.remove("premium-usage");
 
         const accountRemaining = data.account_remaining ?? data.remaining;
         const accountLimit = data.account_limit ?? data.daily_limit;
@@ -47,7 +61,9 @@ async function refreshUsage() {
 
         analyzeBtn.disabled = !selectedFile || data.remaining <= 0;
     } catch (e) {
+        premiumUnlimited = false;
         usageBox.textContent = `사용 가능 횟수를 확인하지 못했습니다: ${e.message}`;
+        usageBox.classList.remove("premium-usage");
         analyzeBtn.disabled = true;
     }
 }
@@ -253,7 +269,9 @@ analyzeBtn.addEventListener("click", async () => {
         }
 
         renderResult(data);
-        statusBox.textContent = `분석 완료 · ${data.model_used || "Gemini"}`;
+        statusBox.textContent = data.usage && data.usage.premium
+            ? `분석 완료 · ${data.model_used || "Gemini"} · PREMIUM`
+            : `분석 완료 · ${data.model_used || "Gemini"}`;
     } catch (e) {
         statusBox.textContent = `오류: ${e.message}`;
     } finally {
