@@ -9,7 +9,10 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
 from supabase import create_client
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -54,19 +57,22 @@ def feedback_database_is_configured() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SECRET_KEY)
 
 
-def _feedback_id(record: dict) -> str:
-    """One latest vote per user/analysis/target.
-
-    Clicking thumbs-up and then thumbs-down should replace the previous vote
-    instead of counting as two independent training signals.
-    """
+def _target_key(record: dict) -> str:
     user_id = str(record.get("user_id") or "anonymous")
     analysis_id = str(record.get("analysis_id") or "unknown")
     target_type = str(record.get("target_type") or "overall")
     event_index = record.get("event_index")
     target = "overall" if target_type == "overall" else f"event:{event_index}"
-    raw = f"{user_id}|{analysis_id}|{target_type}|{target}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return f"{user_id}|{analysis_id}|{target_type}|{target}"
+
+
+def _feedback_id(record: dict) -> str:
+    """One latest vote per user/analysis/target.
+
+    Clicking thumbs-up and then thumbs-down should replace the previous vote
+    instead of counting as two independent calibration signals.
+    """
+    return hashlib.sha256(_target_key(record).encode("utf-8")).hexdigest()
 
 
 def _normalize_record(record: dict) -> dict:
@@ -148,7 +154,7 @@ def _load_local(limit: int) -> list[dict]:
     if not FEEDBACK_FILE.exists():
         return []
 
-    latest_by_id: dict[str, dict] = {}
+    latest_by_target: dict[str, dict] = {}
     try:
         with LOCK:
             lines = FEEDBACK_FILE.read_text(encoding="utf-8").splitlines()
@@ -159,23 +165,27 @@ def _load_local(limit: int) -> list[dict]:
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            feedback_id = str(row.get("feedback_id") or "")
-            if not feedback_id or feedback_id in latest_by_id:
+
+            # This also deduplicates feedback written by older app versions,
+            # whose feedback_id values were random UUIDs.
+            key = _target_key(row)
+            if key in latest_by_target:
                 continue
-            latest_by_id[feedback_id] = row
-            if len(latest_by_id) >= limit:
+            latest_by_target[key] = row
+            if len(latest_by_target) >= limit:
                 break
     except OSError:
         return []
 
-    return list(latest_by_id.values())
+    return list(latest_by_target.values())
 
 
 def _load_recent_feedback(limit: int) -> tuple[list[dict], str]:
     if _db_client() is not None:
         try:
             rows = _load_db(limit)
-            return rows, "supabase"
+            if rows:
+                return rows, "supabase"
         except Exception as exc:
             print(f"[Feedback] Supabase calibration 조회 실패: {exc}")
 
