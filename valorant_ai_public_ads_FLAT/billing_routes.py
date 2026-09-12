@@ -27,6 +27,7 @@ from billing_service import (
     run_due_renewals,
     save_billing_key,
 )
+from history_routes import build_history_router
 
 
 def build_billing_router(get_auth_context, attach_refreshed_session, public_base_url: str) -> APIRouter:
@@ -167,5 +168,13 @@ def build_billing_router(get_auth_context, attach_refreshed_session, public_base
 
         result = await asyncio.to_thread(run_due_renewals)
         return JSONResponse({"ok": True, **result})
+
+    router.include_router(
+        build_history_router(
+            get_auth_context,
+            attach_refreshed_session,
+            public_base_url,
+        )
+    )
 
     return router
