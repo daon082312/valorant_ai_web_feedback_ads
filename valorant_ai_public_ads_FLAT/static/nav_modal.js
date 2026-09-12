@@ -20,6 +20,8 @@
     function cleanupModalState() {
         document.documentElement.classList.remove("analysis-modal-open");
         document.body.classList.remove("analysis-modal-open");
+        document.documentElement.style.overflow = "";
+        document.body.style.overflow = "";
     }
 
     function closeModal() {
@@ -49,7 +51,6 @@
     function ensureModal() {
         if (modal && document.body.contains(modal)) return;
 
-        // Clear any stale modal left behind by a previous interrupted render.
         document.querySelectorAll(".analysis-page-modal").forEach(node => node.remove());
         cleanupModalState();
 
@@ -108,8 +109,6 @@
     }
 
     function openModal(url) {
-        // Always start from a clean modal state so an old transparent overlay
-        // can never remain above the page.
         if (modal) closeModal();
         ensureModal();
 
@@ -156,8 +155,6 @@
         openModal(url.href);
     }, true);
 
-    // Recover automatically if the browser restores this page from bfcache
-    // with stale modal classes or a detached overlay.
     window.addEventListener("pageshow", () => {
         document.querySelectorAll(".analysis-page-modal").forEach(node => node.remove());
         modal = null;
@@ -165,19 +162,5 @@
         modalTitle = null;
         modalSub = null;
         cleanupModalState();
-    });
-
-    const statusObserver = new MutationObserver(() => {
-        const status = document.getElementById("status");
-        if (!status) return;
-        status.textContent = status.textContent
-            .replace("다른 메뉴는 새 탭으로 열리며", "다른 메뉴는 창으로 열리며")
-            .replace("다른 메뉴는 창으로 열리며 분석은 계속됩니다.", "다른 메뉴는 창으로 열리며 분석은 계속됩니다.");
-    });
-
-    statusObserver.observe(document.documentElement, {
-        childList: true,
-        subtree: true,
-        characterData: true
     });
 })();
