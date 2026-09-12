@@ -1,19 +1,20 @@
+{% set embedded = request.query_params.get('embedded') == '1' %}
 <!doctype html>
-<html lang="ko">
+<html lang="ko"{% if embedded %} class="embedded-page"{% endif %}>
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="{% block description %}VALORANT 플레이 클립을 경기 후 분석해 Aim, Movement, Positioning과 의사결정을 코칭하는 도구입니다.{% endblock %}">
     <title>{% block title %}VALORANT AI Coach{% endblock %}</title>
 
-    {% if adsense_enabled %}
+    {% if adsense_enabled and not embedded %}
     <meta name="google-adsense-account" content="{{ adsense_client }}">
     <script async
       src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={{ adsense_client }}"
       crossorigin="anonymous"></script>
     {% endif %}
 
-    {% if adblock_enabled %}
+    {% if adblock_enabled and not embedded %}
     <script src="/static/ads.js"></script>
     {% endif %}
 
@@ -23,8 +24,8 @@
     <link rel="stylesheet" href="/static/nav_modal.css">
     {% block head %}{% endblock %}
 </head>
-<body>
-    {% if adblock_enabled %}
+<body{% if embedded %} class="embedded-page-body"{% endif %}>
+    {% if adblock_enabled and not embedded %}
     <div id="adblockBait" class="adsbox ad-banner ad-unit advertisement" aria-hidden="true"></div>
 
     <div id="adblockGate" class="adblock-gate" role="dialog" aria-modal="true" aria-labelledby="adblockTitle">
@@ -41,11 +42,12 @@
     </div>
     {% endif %}
 
+    {% if not embedded %}
     <nav class="nav">
         <a class="brand" href="/">VALORANT AI COACH</a>
         <div class="nav-links">
-            <a href="/premium" class="premium-nav-link">Premium</a>
-            <a href="/history">내 분석</a>
+            <a href="/premium" class="premium-nav-link" data-modal-page="always">Premium</a>
+            <a href="/history" data-modal-page="always">내 분석</a>
             <a href="/guide">사용 가이드</a>
             <a href="/about">About</a>
             <span id="authNav" class="auth-nav">
@@ -54,15 +56,17 @@
             </span>
         </div>
     </nav>
+    {% endif %}
 
-    <main class="container">
+    <main class="container{% if embedded %} embedded-container{% endif %}">
         {% block content %}{% endblock %}
     </main>
 
+    {% if not embedded %}
     <footer class="footer">
         <div class="footer-links">
-            <a href="/premium">Premium</a>
-            <a href="/history">내 분석</a>
+            <a href="/premium" data-modal-page="always">Premium</a>
+            <a href="/history" data-modal-page="always">내 분석</a>
             <a href="/about">About</a>
             <a href="/privacy">Privacy</a>
             <a href="/terms">Terms</a>
@@ -78,8 +82,9 @@
 
         <p class="copyright">© 2026 VALORANT AI Coach</p>
     </footer>
+    {% endif %}
 
-    {% if adblock_enabled %}
+    {% if adblock_enabled and not embedded %}
     <script>
     (function () {
         function activateAdblockGate() {
@@ -123,6 +128,7 @@
     </script>
     {% endif %}
 
+    {% if not embedded %}
     <script>
     (async function () {
         const root = document.getElementById("authNav");
@@ -166,6 +172,7 @@
     </script>
 
     <script src="/static/nav_modal.js"></script>
+    {% endif %}
     {% block scripts %}{% endblock %}
 </body>
 </html>
