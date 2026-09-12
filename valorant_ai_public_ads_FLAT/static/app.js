@@ -136,6 +136,41 @@ function renderScores(scores) {
     }
 }
 
+function renderTier(prediction) {
+    const tierBadge = document.getElementById("tierBadge");
+    const tierConfidence = document.getElementById("tierConfidence");
+    const tierReason = document.getElementById("tierReason");
+
+    if (!prediction || !prediction.tier) {
+        tierBadge.className = "tier-badge";
+        tierBadge.textContent = "판단 불가";
+        tierConfidence.textContent = "신뢰도 --%";
+        tierReason.textContent = "이 클립에서는 티어를 추정하기 위한 정보가 부족합니다.";
+        return;
+    }
+
+    const labels = {
+        Iron: "아이언",
+        Bronze: "브론즈",
+        Silver: "실버",
+        Gold: "골드",
+        Platinum: "플래티넘",
+        Diamond: "다이아몬드",
+        Ascendant: "초월자",
+        Immortal: "불멸",
+        Radiant: "레디언트"
+    };
+
+    const tier = prediction.tier;
+    const tierClass = `tier-${String(tier).toLowerCase()}`;
+    const confidence = Math.max(0, Math.min(100, Math.round((prediction.confidence ?? 0) * 100)));
+
+    tierBadge.className = `tier-badge ${tierClass}`;
+    tierBadge.textContent = `${labels[tier] || tier} · ${tier}`;
+    tierConfidence.textContent = `신뢰도 ${confidence}%`;
+    tierReason.textContent = prediction.reason || "클립에서 관찰된 플레이를 종합해 추정했습니다.";
+}
+
 function renderEvents(events) {
     const root = document.getElementById("events");
     root.innerHTML = "";
@@ -217,6 +252,7 @@ function renderResult(data) {
     currentAnalysis = data;
     document.getElementById("overallScore").textContent = data.overall_score;
     document.getElementById("summary").textContent = data.summary;
+    renderTier(data.tier_prediction);
     renderScores(data.scores);
     renderEvents(data.events || []);
 
