@@ -17,6 +17,7 @@ from supabase import create_client
 
 from analyzer import analyze_video
 from feedback_store import save_feedback
+from membership_store import is_premium, membership_is_configured
 from usage_store import (
     DailyLimitExceeded,
     get_usage,
@@ -73,15 +74,24 @@ class AuthContext:
     refreshed: bool = False
 
 
-def common_context(request: Request) -> dict:
+def common_context(
+    request: Request,
+    *,
+    is_premium_user: bool = False,
+    adblock_enabled: bool = True,
+    current_user_email: str = "",
+) -> dict:
     return {
         "request": request,
         "contact_email": CONTACT_EMAIL,
         "adsense_client": ADSENSE_CLIENT,
         "adsense_top_slot": ADSENSE_TOP_SLOT,
         "adsense_result_slot": ADSENSE_RESULT_SLOT,
-        "adsense_enabled": bool(ADSENSE_CLIENT),
+        "adsense_enabled": bool(ADSENSE_CLIENT) and not is_premium_user,
         "auth_enabled": auth_is_configured(),
+        "is_premium": is_premium_user,
+        "adblock_enabled": bool(adblock_enabled and not is_premium_user),
+        "current_user_email": current_user_email,
     }
 
 
@@ -173,6 +183,49 @@ def _attach_refreshed_session(response, auth: AuthContext | None):
     return response
 
 
+async def _premium_for_user(user_id: str) -> bool:
+    if not membership_is_configured():
+        return False
+    try:
+        return await asyncio.to_thread(is_premium, user_id)
+    except Exception:
+        return False
+
+
+async def _page_context(
+    request: Request,
+    *,
+    adblock_enabled: bool = True,
+) -> tuple[dict, AuthContext | None]:
+    auth = await asyncio.to_thread(get_auth_context, request)
+    premium = await _premium_for_user(auth.user_id) if auth else False
+    context = common_context(
+        request,
+        is_premium_user=premium,
+        adblock_enabled=adblock_enabled,
+        current_user_email=auth.email if auth else "",
+    )
+    return context, auth
+
+
+async def _render_page(
+    request: Request,
+    template_name: str,
+    *,
+    adblock_enabled: bool = True,
+    extra: dict | None = None,
+):
+    context, auth = await _page_context(request, adblock_enabled=adblock_enabled)
+    if extra:
+        context.update(extra)
+    response = templates.TemplateResponse(
+        request=request,
+        name=template_name,
+        context=context,
+    )
+    return _attach_refreshed_session(response, auth)
+
+
 def get_client_ip(request: Request) -> str:
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
@@ -230,7 +283,7 @@ def _auth_redirect_url(request: Request) -> str:
 
 
 def _render_auth(request: Request, mode: str, *, error: str = "", message: str = "", status_code: int = 200):
-    context = common_context(request)
+    context = common_context(request, adblock_enabled=False)
     context.update({"mode": mode, "error": error, "message": message})
     return templates.TemplateResponse(
         request=request,
@@ -242,27 +295,32 @@ def _render_auth(request: Request, mode: str, *, error: str = "", message: str =
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse(request=request, name="index.html", context=common_context(request))
+    return await _render_page(request, "index.html")
 
 
 @app.get("/about", response_class=HTMLResponse)
 async def about(request: Request):
-    return templates.TemplateResponse(request=request, name="about.html", context=common_context(request))
+    return await _render_page(request, "about.html")
 
 
 @app.get("/privacy", response_class=HTMLResponse)
 async def privacy(request: Request):
-    return templates.TemplateResponse(request=request, name="privacy.html", context=common_context(request))
+    return await _render_page(request, "privacy.html")
 
 
 @app.get("/terms", response_class=HTMLResponse)
 async def terms(request: Request):
-    return templates.TemplateResponse(request=request, name="terms.html", context=common_context(request))
+    return await _render_page(request, "terms.html")
 
 
 @app.get("/guide", response_class=HTMLResponse)
 async def guide(request: Request):
-    return templates.TemplateResponse(request=request, name="guide.html", context=common_context(request))
+    return await _render_page(request, "guide.html")
+
+
+@app.get("/premium", response_class=HTMLResponse)
+async def premium_page(request: Request):
+    return await _render_page(request, "premium.html", adblock_enabled=False)
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -303,9 +361,13 @@ async def signup(request: Request, email: str = Form(...), password: str = Form(
         return RedirectResponse(url="/login?registered=1", status_code=303)
     except Exception as exc:
         text = str(exc)
-        message = "이미 가입된 이메일입니다. 로그인해 주세요." if "already registered" in text.lower() else (
-            "회원가입에 실패했습니다. 이메일 주소와 비밀번호를 확인해 주세요."
-        )
+        lowered = text.lower()
+        if "already registered" in lowered:
+            message = "이미 가입된 이메일입니다. 로그인해 주세요."
+        elif "rate limit" in lowered:
+            message = "인증 이메일 발송 한도에 도달했습니다. 잠시 후 다시 시도해 주세요."
+        else:
+            message = "회원가입에 실패했습니다. 이메일 주소와 비밀번호를 확인해 주세요."
         return _render_auth(request, "signup", error=message, status_code=400)
 
 
@@ -354,16 +416,27 @@ async def logout(request: Request):
 async def auth_me(request: Request):
     auth = await asyncio.to_thread(get_auth_context, request)
     if not auth:
-        response = JSONResponse({"authenticated": False, "email": None})
+        response = JSONResponse({"authenticated": False, "email": None, "premium": False})
         _clear_auth_cookies(response)
         return response
-    response = JSONResponse({"authenticated": True, "email": auth.email})
+
+    premium = await _premium_for_user(auth.user_id)
+    response = JSONResponse({
+        "authenticated": True,
+        "email": auth.email,
+        "premium": premium,
+    })
     return _attach_refreshed_session(response, auth)
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "auth_configured": auth_is_configured(), "usage_database_configured": usage_is_configured()}
+    return {
+        "status": "ok",
+        "auth_configured": auth_is_configured(),
+        "usage_database_configured": usage_is_configured(),
+        "premium_database_configured": membership_is_configured(),
+    }
 
 
 @app.get("/usage")
@@ -371,6 +444,21 @@ async def usage(request: Request):
     auth = await asyncio.to_thread(get_auth_context, request)
     if not auth:
         return login_required_response()
+
+    premium = await _premium_for_user(auth.user_id)
+    if premium:
+        response = JSONResponse({
+            "premium": True,
+            "unlimited": True,
+            "remaining": None,
+            "daily_limit": None,
+            "account_remaining": None,
+            "account_limit": None,
+            "ip_remaining": None,
+            "ip_limit": None,
+        })
+        return _attach_refreshed_session(response, auth)
+
     if not usage_is_configured():
         return usage_database_error_response()
 
@@ -387,6 +475,8 @@ async def usage(request: Request):
         return usage_database_error_response()
 
     response = JSONResponse({
+        "premium": False,
+        "unlimited": False,
         "remaining": usage_data["remaining"],
         "daily_limit": ACCOUNT_DAILY_LIMIT,
         "account_remaining": usage_data["account_remaining"],
@@ -415,7 +505,7 @@ async def robots_txt():
 async def sitemap_xml():
     if not PUBLIC_BASE_URL:
         return '<?xml version="1.0" encoding="UTF-8"?><urlset></urlset>'
-    paths = ["", "/about", "/privacy", "/terms", "/guide", "/login", "/signup"]
+    paths = ["", "/about", "/privacy", "/terms", "/guide", "/premium", "/login", "/signup"]
     urls = "".join(f"<url><loc>{PUBLIC_BASE_URL}{p}</loc></url>" for p in paths)
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
@@ -429,32 +519,37 @@ async def analyze(request: Request, file: UploadFile = File(...)):
     auth = await asyncio.to_thread(get_auth_context, request)
     if not auth:
         return login_required_response()
-    if not usage_is_configured():
+
+    premium = await _premium_for_user(auth.user_id)
+    if not premium and not usage_is_configured():
         return usage_database_error_response()
 
     ip = get_client_ip(request)
     lock = await get_analysis_lock(auth.user_id)
 
     async with lock:
-        try:
-            usage_before = await asyncio.to_thread(
-                get_usage,
-                auth.user_id,
-                ip,
-                ACCOUNT_DAILY_LIMIT,
-                IP_DAILY_LIMIT,
-            )
-        except Exception:
-            return usage_database_error_response()
+        if premium:
+            usage_before = {"remaining": None}
+        else:
+            try:
+                usage_before = await asyncio.to_thread(
+                    get_usage,
+                    auth.user_id,
+                    ip,
+                    ACCOUNT_DAILY_LIMIT,
+                    IP_DAILY_LIMIT,
+                )
+            except Exception:
+                return usage_database_error_response()
 
-        if usage_before["remaining"] <= 0:
-            response = JSONResponse(
-                status_code=429,
-                content={"detail": {"code": "USER_DAILY_LIMIT", "message": (
-                    "오늘의 무료 분석 한도를 모두 사용했습니다. 계정 또는 동일 네트워크의 일일 한도에 도달했습니다."
-                ), "remaining": 0, "daily_limit": ACCOUNT_DAILY_LIMIT}},
-            )
-            return _attach_refreshed_session(response, auth)
+            if usage_before["remaining"] <= 0:
+                response = JSONResponse(
+                    status_code=429,
+                    content={"detail": {"code": "USER_DAILY_LIMIT", "message": (
+                        "오늘의 무료 분석 한도를 모두 사용했습니다. 계정 또는 동일 네트워크의 일일 한도에 도달했습니다."
+                    ), "remaining": 0, "daily_limit": ACCOUNT_DAILY_LIMIT}},
+                )
+                return _attach_refreshed_session(response, auth)
 
         if not file.filename:
             raise HTTPException(status_code=400, detail="파일 이름이 없습니다.")
@@ -476,29 +571,38 @@ async def analyze(request: Request, file: UploadFile = File(...)):
 
             result = await asyncio.to_thread(analyze_video, temp_path)
 
-            try:
-                usage_after = await asyncio.to_thread(
-                    record_success,
-                    auth.user_id,
-                    ip,
-                    ACCOUNT_DAILY_LIMIT,
-                    IP_DAILY_LIMIT,
-                )
-            except DailyLimitExceeded:
-                response = JSONResponse(
-                    status_code=429,
-                    content={"detail": {"code": "USER_DAILY_LIMIT", "message": (
-                        "오늘의 무료 분석 한도를 모두 사용했습니다. 계정 또는 동일 네트워크의 일일 한도에 도달했습니다."
-                    ), "remaining": 0, "daily_limit": ACCOUNT_DAILY_LIMIT}},
-                )
-                return _attach_refreshed_session(response, auth)
-            except Exception:
-                return usage_database_error_response()
+            if premium:
+                usage_after = {
+                    "remaining": None,
+                    "account_remaining": None,
+                    "ip_remaining": None,
+                }
+            else:
+                try:
+                    usage_after = await asyncio.to_thread(
+                        record_success,
+                        auth.user_id,
+                        ip,
+                        ACCOUNT_DAILY_LIMIT,
+                        IP_DAILY_LIMIT,
+                    )
+                except DailyLimitExceeded:
+                    response = JSONResponse(
+                        status_code=429,
+                        content={"detail": {"code": "USER_DAILY_LIMIT", "message": (
+                            "오늘의 무료 분석 한도를 모두 사용했습니다. 계정 또는 동일 네트워크의 일일 한도에 도달했습니다."
+                        ), "remaining": 0, "daily_limit": ACCOUNT_DAILY_LIMIT}},
+                    )
+                    return _attach_refreshed_session(response, auth)
+                except Exception:
+                    return usage_database_error_response()
 
             result["analysis_id"] = uuid.uuid4().hex
             result["usage"] = {
+                "premium": premium,
+                "unlimited": premium,
                 "remaining": usage_after["remaining"],
-                "daily_limit": ACCOUNT_DAILY_LIMIT,
+                "daily_limit": None if premium else ACCOUNT_DAILY_LIMIT,
                 "account_remaining": usage_after["account_remaining"],
                 "ip_remaining": usage_after["ip_remaining"],
             }
@@ -512,7 +616,13 @@ async def analyze(request: Request, file: UploadFile = File(...)):
             status, code, message = classify_analysis_error(exc)
             response = JSONResponse(
                 status_code=status,
-                content={"detail": {"code": code, "message": message, "remaining": usage_before["remaining"], "daily_limit": ACCOUNT_DAILY_LIMIT}},
+                content={"detail": {
+                    "code": code,
+                    "message": message,
+                    "premium": premium,
+                    "remaining": usage_before["remaining"],
+                    "daily_limit": None if premium else ACCOUNT_DAILY_LIMIT,
+                }},
             )
             return _attach_refreshed_session(response, auth)
         finally:
