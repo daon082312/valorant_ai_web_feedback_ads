@@ -5,13 +5,13 @@
         "/about": "About",
         "/premium": "Premium",
         "/privacy": "Privacy",
-        "/terms": "Terms",
-        "/": "새 영상 분석"
+        "/terms": "Terms"
     };
 
     let modal = null;
     let frame = null;
     let modalTitle = null;
+    let modalSub = null;
 
     function isAnalysisRunning() {
         return document.documentElement.classList.contains("analysis-in-progress");
@@ -24,7 +24,7 @@
         modal.className = "analysis-page-modal";
         modal.setAttribute("role", "dialog");
         modal.setAttribute("aria-modal", "true");
-        modal.setAttribute("aria-label", "분석 중 페이지 보기");
+        modal.setAttribute("aria-label", "사이트 페이지 창");
 
         const card = document.createElement("div");
         card.className = "analysis-page-modal-card";
@@ -38,8 +38,8 @@
         modalTitle = document.createElement("strong");
         modalTitle.textContent = "페이지";
 
-        const sub = document.createElement("span");
-        sub.textContent = "영상 분석은 뒤에서 계속 진행됩니다.";
+        modalSub = document.createElement("span");
+        modalSub.textContent = "창을 닫으면 원래 화면으로 돌아갑니다.";
 
         const close = document.createElement("button");
         close.type = "button";
@@ -52,7 +52,7 @@
         frame.className = "analysis-page-modal-frame";
         frame.title = "사이트 내부 페이지";
 
-        titleWrap.append(modalTitle, sub);
+        titleWrap.append(modalTitle, modalSub);
         head.append(titleWrap, close);
         card.append(head, frame);
         modal.appendChild(card);
@@ -63,10 +63,19 @@
         });
     }
 
+    function embeddedUrl(url) {
+        const parsed = new URL(url, window.location.href);
+        parsed.searchParams.set("embedded", "1");
+        return parsed;
+    }
+
     function openModal(url) {
         ensureModal();
-        const parsed = new URL(url, window.location.href);
+        const parsed = embeddedUrl(url);
         modalTitle.textContent = titleByPath[parsed.pathname] || "페이지";
+        modalSub.textContent = isAnalysisRunning()
+            ? "영상 분석은 뒤에서 계속 진행됩니다."
+            : "창을 닫으면 원래 화면으로 돌아갑니다.";
         frame.src = parsed.href;
         modal.classList.add("open");
         document.documentElement.classList.add("analysis-modal-open");
@@ -88,14 +97,19 @@
     });
 
     document.addEventListener("click", (event) => {
-        if (!isAnalysisRunning()) return;
-
         const link = event.target.closest("a[href]");
         if (!link) return;
 
         const url = new URL(link.href, window.location.href);
         if (url.origin !== window.location.origin) return;
         if (url.hash && url.pathname === window.location.pathname) return;
+
+        const alwaysModal = link.dataset.modalPage === "always"
+            || url.pathname === "/history"
+            || url.pathname === "/premium";
+        const analysisModal = isAnalysisRunning() && Object.hasOwn(titleByPath, url.pathname);
+
+        if (!alwaysModal && !analysisModal) return;
 
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -105,12 +119,9 @@
     const statusObserver = new MutationObserver(() => {
         const status = document.getElementById("status");
         if (!status) return;
-        if (status.textContent.includes("다른 메뉴는 새 탭으로 열리며")) {
-            status.textContent = status.textContent.replace(
-                "다른 메뉴는 새 탭으로 열리며",
-                "다른 메뉴는 창으로 열리며"
-            );
-        }
+        status.textContent = status.textContent
+            .replace("다른 메뉴는 새 탭으로 열리며", "다른 메뉴는 창으로 열리며")
+            .replace("다른 메뉴는 창으로 열리며 분석은 계속됩니다.", "다른 메뉴는 창으로 열리며 분석은 계속됩니다.");
     });
 
     statusObserver.observe(document.documentElement, {
