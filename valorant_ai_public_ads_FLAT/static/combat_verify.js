@@ -45,16 +45,17 @@
         return canvas;
     }
 
-    function snapshotKillfeedCanvas(targetWidth = 720) {
+    function snapshotKillfeedCanvas(targetWidth = 1280) {
         const sourceWidth = player.videoWidth || 1280;
         const sourceHeight = player.videoHeight || 720;
 
-        // VALORANT killfeed is in the upper-right. Keep a deliberately generous
-        // crop so different HUD scales / resolutions still include all entries.
-        const sx = Math.floor(sourceWidth * 0.52);
+        // Keep the entire upper-right killfeed block rather than a narrow row.
+        // 2026 killfeed entries can include assist portraits and ability icons,
+        // so a wider/taller crop prevents those elements from being clipped.
+        const sx = Math.floor(sourceWidth * 0.40);
         const sy = 0;
-        const sw = Math.max(1, Math.floor(sourceWidth * 0.48));
-        const sh = Math.max(1, Math.floor(sourceHeight * 0.36));
+        const sw = Math.max(1, Math.floor(sourceWidth * 0.60));
+        const sh = Math.max(1, Math.floor(sourceHeight * 0.46));
         const width = targetWidth;
         const height = Math.max(1, Math.round(sh * (width / sw)));
 
@@ -68,12 +69,15 @@
         return canvas;
     }
 
-    function buildContactSheet(samples, type) {
-        const isKillfeed = type === "killfeed";
-        const columns = 3;
+    function canvasToJpeg(canvas, quality = 0.88) {
+        return canvas.toDataURL("image/jpeg", quality);
+    }
+
+    function buildFullContextSheet(samples) {
+        const columns = 2;
         const rows = Math.ceil(samples.length / columns);
-        const cellWidth = isKillfeed ? 420 : 350;
-        const imageHeight = isKillfeed ? 180 : 197;
+        const cellWidth = 430;
+        const imageHeight = 242;
         const labelHeight = 28;
         const gap = 8;
         const sheet = document.createElement("canvas");
@@ -90,11 +94,10 @@
             const row = Math.floor(index / columns);
             const x = gap + col * (cellWidth + gap);
             const y = gap + row * (imageHeight + labelHeight + gap);
-            const source = isKillfeed ? sample.killfeed : sample.full;
+            const source = sample.full;
 
             ctx.fillStyle = "#111722";
             ctx.fillRect(x, y, cellWidth, imageHeight);
-
             const scale = Math.min(cellWidth / source.width, imageHeight / source.height);
             const drawWidth = source.width * scale;
             const drawHeight = source.height * scale;
@@ -104,11 +107,10 @@
 
             ctx.fillStyle = "#ffffff";
             const sign = sample.offset >= 0 ? "+" : "";
-            const prefix = isKillfeed ? "KILLFEED" : "FULL";
-            ctx.fillText(`${prefix} ${sign}${sample.offset.toFixed(2)}s`, x + 8, y + imageHeight + labelHeight / 2);
+            ctx.fillText(`FULL ${sign}${sample.offset.toFixed(2)}s`, x + 8, y + imageHeight + labelHeight / 2);
         });
 
-        return sheet.toDataURL("image/jpeg", isKillfeed ? 0.78 : 0.70);
+        return sheet.toDataURL("image/jpeg", 0.74);
     }
 
     async function captureVerificationFrames(events) {
@@ -132,10 +134,11 @@
                 const event = events[index];
                 const center = timestampToSeconds(event.timestamp);
 
-                // Main timestamps originate from ~1 FPS video sampling, so scan
-                // a wider window at much denser intervals. Killfeed entries often
-                // remain visible for a short time after the actual kill.
-                const offsets = [-0.35, 0.00, 0.30, 0.60, 0.95, 1.30];
+                // The main model timestamps can be off by roughly one second.
+                // Capture a broad context window, but send killfeed as two large
+                // standalone frames so multiple stacked entries never get shrunk
+                // into a small contact-sheet cell.
+                const offsets = [-0.45, 0.20, 0.90, 1.55];
                 const samples = [];
 
                 for (const offset of offsets) {
@@ -143,23 +146,22 @@
                     samples.push({
                         offset,
                         full: snapshotFullCanvas(960),
-                        killfeed: snapshotKillfeedCanvas(720)
+                        killfeed: snapshotKillfeedCanvas(1280)
                     });
                 }
 
-                // Only two images are sent per event: a magnified killfeed
-                // timeline and a full-scene timeline. This is cheaper than
-                // sending every raw frame separately while making the small UI
-                // dramatically easier for Gemini to read.
-                const killfeedSheet = buildContactSheet(samples, "killfeed");
-                const fullSheet = buildContactSheet(samples, "full");
+                // Prefer post-event frames for killfeed because the entry appears
+                // immediately after the elimination and remains visible briefly.
+                const killfeedA = canvasToJpeg(samples[1].killfeed, 0.90);
+                const killfeedB = canvasToJpeg(samples[2].killfeed, 0.90);
+                const fullSheet = buildFullContextSheet(samples);
 
                 payloadEvents.push({
                     event_index: index,
                     timestamp: String(event.timestamp || ""),
                     observation: String(event.observation || ""),
                     feedback: String(event.feedback || ""),
-                    frames: [killfeedSheet, fullSheet]
+                    frames: [killfeedA, killfeedB, fullSheet]
                 });
             }
         } finally {
@@ -239,6 +241,7 @@
 
         data.combat_verification_used = Boolean(verification?.verified && items.length);
         data.combat_verification_model = verification?.model_used || "";
+        data.combat_portrait_reference_used = Boolean(verification?.portrait_reference_used);
         return data;
     }
 
@@ -275,11 +278,17 @@
                 ? (event.killfeed_supports_pov_kill ? "킬로그 · 본인 처치 확인" : "킬로그 · 확인됨")
                 : "킬로그 · 확인 안 됨";
 
+            const portraitBadge = document.createElement("span");
+            portraitBadge.className = "badge";
+            portraitBadge.textContent = data.combat_portrait_reference_used
+                ? "요원 초상화 대조 · 적용"
+                : "요원 초상화 대조 · 생략";
+
             const evidence = document.createElement("span");
             evidence.className = "muted";
             evidence.textContent = event.killfeed_note || event.combat_evidence || "";
 
-            row.append(badge, killfeedBadge, evidence);
+            row.append(badge, killfeedBadge, portraitBadge, evidence);
             const head = box.querySelector(".event-head");
             if (head?.nextSibling) {
                 box.insertBefore(row, head.nextSibling);
@@ -295,7 +304,7 @@
 
         try {
             if (statusBoxEl) {
-                statusBoxEl.textContent = "주요 장면의 우측 상단 킬로그를 확대해 킬/데스를 재검증하는 중...";
+                statusBoxEl.textContent = "요원 초상화와 큰 킬로그 프레임으로 킬/데스를 재검증하는 중...";
             }
             const verification = await requestCombatVerification(data);
             if (!verification?.verified) {
@@ -312,7 +321,7 @@
             }
 
             if (statusBoxEl) {
-                const base = `분석 완료 · ${data.model_used || "Gemini"} · 킬로그 확대 검증 완료`;
+                const base = `분석 완료 · ${data.model_used || "Gemini"} · 초상화+킬로그 확대 검증 완료`;
                 statusBoxEl.textContent = data.usage?.premium ? `${base} · PREMIUM` : base;
             }
         } catch (error) {
