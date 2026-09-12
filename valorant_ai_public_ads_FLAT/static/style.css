@@ -10,8 +10,19 @@
     --max: 980px;
 }
 
+html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 84px;
+    scrollbar-gutter: stable;
+    -webkit-overflow-scrolling: touch;
+}
+
 * { box-sizing: border-box; }
-body { margin: 0; background: #0b0e13; }
+body {
+    margin: 0;
+    background: #0b0e13;
+    overscroll-behavior-y: contain;
+}
 a { color: inherit; }
 .container { width: min(var(--max), calc(100% - 32px)); margin: auto; padding: 42px 0 56px; }
 
@@ -189,6 +200,10 @@ textarea {
 .footer-links { display: flex; gap: 18px; flex-wrap: wrap; }
 .riot-disclaimer { color: #727b89; font-size: 12px; line-height: 1.6; max-width: 900px; margin-top: 20px; }
 .copyright { color: #646d79; font-size: 12px; }
+
+@media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+}
 
 @media (max-width: 680px) {
     .nav-links { display: none; }
