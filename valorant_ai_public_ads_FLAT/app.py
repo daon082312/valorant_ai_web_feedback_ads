@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 from supabase import create_client
 
 from analyzer import analyze_video
+from billing_routes import build_billing_router
+from billing_service import billing_is_configured, billing_scheduler_is_configured
 from feedback_store import save_feedback
 from membership_store import is_premium, membership_is_configured
 from usage_store import (
@@ -293,6 +295,9 @@ def _render_auth(request: Request, mode: str, *, error: str = "", message: str =
     )
 
 
+app.include_router(build_billing_router(get_auth_context, _attach_refreshed_session, PUBLIC_BASE_URL))
+
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     return await _render_page(request, "index.html")
@@ -436,6 +441,8 @@ async def health():
         "auth_configured": auth_is_configured(),
         "usage_database_configured": usage_is_configured(),
         "premium_database_configured": membership_is_configured(),
+        "billing_configured": billing_is_configured(),
+        "billing_scheduler_configured": billing_scheduler_is_configured(),
     }
 
 
