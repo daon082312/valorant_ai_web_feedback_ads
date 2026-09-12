@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 
+{% block head %}
+<link rel="stylesheet" href="/static/vision_learning.css">
+{% endblock %}
+
 {% block content %}
 <header class="hero">
     <div class="eyebrow">POST-GAME AI COACHING</div>
@@ -52,6 +56,27 @@
         <p id="summary" class="summary"></p>
     </div>
 
+    <section class="panel vision-learning-panel">
+        <div class="eyebrow">AGENT RECOGNITION · LEARNS FROM CORRECTIONS</div>
+        <div class="vision-agent-row">
+            <div>
+                <div class="muted">판별된 에이전트</div>
+                <div id="agentPredictionName" class="vision-agent-name">--</div>
+                <div id="agentPredictionConfidence" class="vision-confidence">신뢰도 --%</div>
+            </div>
+            <div>
+                <p id="agentPredictionReason" class="summary"></p>
+                <div class="vision-correction">
+                    <input id="agentCorrectionInput" maxlength="60" placeholder="틀렸다면 실제 에이전트명 (예: Jett)">
+                    <button id="trainAgentBtn" type="button">정답으로 학습</button>
+                </div>
+                <div id="agentTrainingStatus" class="vision-training-status">
+                    정정하면 해당 프레임의 특징값으로 별도 이미지 분류 모델이 실제 재학습됩니다.
+                </div>
+            </div>
+        </div>
+    </section>
+
     <section class="panel tier-panel">
         <div class="eyebrow">CLIP-BASED TIER PREDICTION</div>
         <div class="tier-layout">
@@ -81,7 +106,7 @@
 
     <section class="panel">
         <h2>주요 장면</h2>
-        <p class="muted">타임스탬프를 누르면 해당 장면으로 이동합니다.</p>
+        <p class="muted">타임스탬프를 누르면 해당 장면으로 이동합니다. 스킬 판별이 틀리면 정답을 입력해 모델을 학습시킬 수 있습니다.</p>
         <div id="events"></div>
     </section>
 
