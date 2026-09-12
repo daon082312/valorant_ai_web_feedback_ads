@@ -307,6 +307,9 @@ def _generate(client: genai.Client, uploaded, calibration: dict, vision_hint: di
                         response_mime_type="application/json",
                         response_schema=ValorantAnalysis,
                         temperature=0.15,
+                        automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                            disable=True
+                        ),
                     ),
                 )
 
