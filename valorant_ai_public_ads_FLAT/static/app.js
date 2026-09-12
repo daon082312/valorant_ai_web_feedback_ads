@@ -12,7 +12,13 @@ let selectedOverallRating = null;
 async function refreshUsage() {
     try {
         const r = await fetch("/usage", {credentials: "same-origin"});
-        const data = await r.json();
+        let data = null;
+
+        try {
+            data = await r.json();
+        } catch (_) {
+            throw new Error(`사용량 서버 응답 오류 (HTTP ${r.status})`);
+        }
 
         if (r.status === 401) {
             usageBox.innerHTML = '분석하려면 <a href="/login">로그인</a>해 주세요.';
@@ -21,7 +27,11 @@ async function refreshUsage() {
         }
 
         if (!r.ok) {
-            throw new Error("사용 가능 횟수 확인 실패");
+            const detail = data && data.detail;
+            if (detail && typeof detail === "object") {
+                throw new Error(detail.message || detail.code || `HTTP ${r.status}`);
+            }
+            throw new Error(detail || `사용 가능 횟수 확인 실패 (HTTP ${r.status})`);
         }
 
         const accountRemaining = data.account_remaining ?? data.remaining;
@@ -36,8 +46,8 @@ async function refreshUsage() {
         }
 
         analyzeBtn.disabled = !selectedFile || data.remaining <= 0;
-    } catch {
-        usageBox.textContent = "사용 가능 횟수를 확인하지 못했습니다.";
+    } catch (e) {
+        usageBox.textContent = `사용 가능 횟수를 확인하지 못했습니다: ${e.message}`;
         analyzeBtn.disabled = true;
     }
 }
