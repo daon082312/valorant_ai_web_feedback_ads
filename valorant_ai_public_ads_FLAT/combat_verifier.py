@@ -23,6 +23,8 @@ class CombatVerificationItem(BaseModel):
 
 class CombatVerificationResponse(BaseModel):
     events: list[CombatVerificationItem]
+    replace_summary: bool = Field(description="전체 요약에 잘못된 킬/데스 전제가 있어 수정이 필요한지")
+    corrected_summary: str = Field(description="전투 결과 검증을 반영한 전체 한국어 요약. 수정이 필요 없으면 기존 요약을 그대로 반환")
 
 
 PROMPT = """
@@ -42,6 +44,8 @@ PROMPT = """
 7. 기존 문장이 사망을 잘못 전제로 하면 사망 전제를 제거하세요. 실제 적 처치를 놓쳤다면 명확히 적 처치를 반영하세요.
 8. corrected_observation은 화면에서 직접 확인한 사실 위주 1문장, corrected_feedback은 그 사실에 맞는 1~2문장 코칭으로 작성하세요.
 9. 제공된 이벤트 인덱스를 그대로 반환하고, 모든 이벤트를 정확히 한 번씩 반환하세요.
+10. 전체 요약에 이번 프레임 검증과 충돌하는 킬/데스 주장이 있으면 replace_summary=true로 하고 그 부분만 수정하세요.
+    킬/데스와 무관한 Aim, Movement, Positioning, Utility 코칭은 가능한 한 유지하세요.
 """
 
 
@@ -56,16 +60,19 @@ def _model_candidates() -> list[str]:
     return result
 
 
-def verify_combat_events(events: list[dict]) -> dict:
+def verify_combat_events(events: list[dict], summary: str = "") -> dict:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY_NOT_CONFIGURED")
 
     if not events:
-        return {"events": [], "model_used": "", "verified": False}
+        return {"events": [], "model_used": "", "verified": False, "replace_summary": False, "corrected_summary": summary}
 
     client = genai.Client(api_key=api_key)
-    contents: list = [PROMPT]
+    contents: list = [
+        PROMPT,
+        "전체 기존 요약:\n" + str(summary or "")[:1800],
+    ]
 
     for event in events[:6]:
         idx = int(event.get("event_index", 0))
@@ -92,7 +99,7 @@ def verify_combat_events(events: list[dict]) -> dict:
                     response_mime_type="application/json",
                     response_schema=CombatVerificationResponse,
                     temperature=0.0,
-                    max_output_tokens=1500,
+                    max_output_tokens=1800,
                     media_resolution=types.MediaResolution.MEDIA_RESOLUTION_HIGH,
                     thinking_config=types.ThinkingConfig(thinking_level="minimal"),
                     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
@@ -113,6 +120,8 @@ def verify_combat_events(events: list[dict]) -> dict:
                 "events": filtered,
                 "model_used": model,
                 "verified": bool(filtered),
+                "replace_summary": bool(parsed.get("replace_summary")),
+                "corrected_summary": str(parsed.get("corrected_summary") or summary),
             }
         except (errors.APIError, ValueError, RuntimeError) as exc:
             text = f"{model}: {type(exc).__name__}: {exc}"
