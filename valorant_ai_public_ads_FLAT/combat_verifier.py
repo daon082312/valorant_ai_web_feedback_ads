@@ -8,7 +8,10 @@ from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, Field
 
-from portrait_reference import build_agent_portrait_reference_sheet
+from portrait_reference import (
+    build_agent_portrait_reference_sheet,
+    match_agent_portrait_in_killfeed,
+)
 
 load_dotenv()
 
@@ -57,18 +60,20 @@ PROMPT = """
 4. 2026년 VALORANT 킬피드에는 어시스트 요원 아이콘도 추가로 보일 수 있습니다. 보조/어시스트 아이콘을 공격자 본인 아이콘으로 착각하지 마세요.
 5. 현재 POV 플레이어 요원명이 별도로 제공됩니다. 같은 팀에서는 같은 요원을 중복 선택할 수 없으므로,
    킬로그 공격자 쪽 초상화가 POV 요원과 명확히 일치하면 본인 처치의 강한 증거입니다.
-6. 킬로그에 다른 팀원의 처치만 보이면 POV 플레이어의 kill로 계산하지 마세요.
-7. POV 플레이어가 죽었다고 판정하려면 사망 화면, Combat Report, 관전자 전환, 리스폰 전환 등 직접 증거가 필요합니다.
+6. 서버가 제공하는 "초상화 매칭 힌트"는 확대 킬로그 안에서 POV 요원과 비슷한 초상화가 보였다는 보조 신호입니다.
+   이 힌트만으로 kill을 확정하지 말고, 반드시 그 초상화가 공격자 쪽 행에 있는지 직접 확인하세요.
+7. 킬로그에 다른 팀원의 처치만 보이면 POV 플레이어의 kill로 계산하지 마세요.
+8. POV 플레이어가 죽었다고 판정하려면 사망 화면, Combat Report, 관전자 전환, 리스폰 전환 등 직접 증거가 필요합니다.
    피격, 저체력, 붉은 화면, 화면 흔들림, 엄폐, 후퇴, 암전만으로 death를 판정하지 마세요.
-8. 이후 FULL CONTEXT에서도 정상 HUD/무기/체력이 유지되고 플레이가 계속되면 death가 아니라 survived 쪽을 우선합니다.
-9. 킬로그가 읽히지 않거나 증거가 충돌하면 uncertain을 사용하세요. 잘못된 확정보다 불확실 판정이 낫습니다.
-10. 기존 observation/feedback이 실제 킬로그 또는 사망 UI와 충돌하면 replace_text=true로 하고 수정하세요.
-11. 기존 문장이 본인 사망을 잘못 전제로 하면 그 전제를 제거하세요. 실제 적 처치를 놓쳤다면 킬로그 근거를 반영하세요.
-12. corrected_observation은 화면에서 직접 확인한 사실 위주 한 문장, corrected_feedback은 해당 사실에 맞는 1~2문장 코칭으로 작성하세요.
-13. 제공된 이벤트 인덱스를 그대로 반환하고 모든 이벤트를 정확히 한 번씩 반환하세요.
-14. 전체 요약에 이번 검증과 충돌하는 킬/데스 주장이 있으면 replace_summary=true로 하고 그 부분만 수정하세요.
+9. 이후 FULL CONTEXT에서도 정상 HUD/무기/체력이 유지되고 플레이가 계속되면 death가 아니라 survived 쪽을 우선합니다.
+10. 킬로그가 읽히지 않거나 증거가 충돌하면 uncertain을 사용하세요. 잘못된 확정보다 불확실 판정이 낫습니다.
+11. 기존 observation/feedback이 실제 킬로그 또는 사망 UI와 충돌하면 replace_text=true로 하고 수정하세요.
+12. 기존 문장이 본인 사망을 잘못 전제로 하면 그 전제를 제거하세요. 실제 적 처치를 놓쳤다면 킬로그 근거를 반영하세요.
+13. corrected_observation은 화면에서 직접 확인한 사실 위주 한 문장, corrected_feedback은 해당 사실에 맞는 1~2문장 코칭으로 작성하세요.
+14. 제공된 이벤트 인덱스를 그대로 반환하고 모든 이벤트를 정확히 한 번씩 반환하세요.
+15. 전체 요약에 이번 검증과 충돌하는 킬/데스 주장이 있으면 replace_summary=true로 하고 그 부분만 수정하세요.
     Aim, Movement, Positioning, Utility 등 킬/데스와 무관한 코칭은 유지하세요.
-15. killfeed_note에는 실제로 읽은 킬로그 근거를 적으세요. 읽을 수 없으면 "확대 킬로그에서 명확한 엔트리를 확인하지 못함"이라고 적으세요.
+16. killfeed_note에는 실제로 읽은 킬로그 근거를 적으세요. 읽을 수 없으면 "확대 킬로그에서 명확한 엔트리를 확인하지 못함"이라고 적으세요.
 """
 
 
@@ -108,8 +113,6 @@ def verify_combat_events(
         "전체 기존 요약:\n" + str(summary or "")[:1800],
     ]
 
-    # Give Gemini an explicit visual dictionary of current agent portraits so
-    # tiny killfeed portraits can be matched instead of guessed from memory.
     try:
         portrait_sheet = build_agent_portrait_reference_sheet()
     except Exception as exc:
@@ -119,18 +122,44 @@ def verify_combat_events(
         contents.append("VALORANT 요원 초상화 참조 시트. 이후 킬로그 아이콘을 이 시트와 대조하세요.")
         contents.append(types.Part.from_bytes(data=portrait_sheet, mime_type="image/jpeg"))
 
+    portrait_hints: dict[int, list[dict]] = {}
+
     for event in events[:6]:
         idx = int(event.get("event_index", 0))
         timestamp = str(event.get("timestamp") or "")[:20]
         observation = str(event.get("observation") or "")[:700]
         feedback = str(event.get("feedback") or "")[:900]
+        frames = list(event.get("frames") or [])[:3]
+
+        hints: list[dict] = []
+        if player_agent and player_agent.casefold() != "unknown":
+            for frame_no, image_bytes in enumerate(frames[:2]):
+                try:
+                    hint = match_agent_portrait_in_killfeed(image_bytes, player_agent)
+                except Exception as exc:
+                    print(f"[CombatVerifier] portrait match skipped: {type(exc).__name__}: {exc}")
+                    continue
+                hints.append(hint)
+        portrait_hints[idx] = hints
+
+        hint_text = ""
+        if hints:
+            formatted = ", ".join(
+                f"{chr(65 + i)} similarity={float(h.get('similarity') or 0):.3f} ready={bool(h.get('ready'))}"
+                for i, h in enumerate(hints)
+            )
+            hint_text = (
+                f"\n서버 초상화 매칭 힌트 ({player_agent}): {formatted}. "
+                "이 값은 해당 요원 초상화가 이미지 어딘가에 있는지에 대한 보조 신호일 뿐 공격자/피해자 위치를 뜻하지 않습니다."
+            )
+
         contents.append(
             f"이벤트 {idx} · timestamp={timestamp}\n"
             f"기존 관찰: {observation}\n"
-            f"기존 피드백: {feedback}\n"
+            f"기존 피드백: {feedback}"
+            f"{hint_text}\n"
             "다음 이미지를 순서대로 판독하세요. 앞쪽은 큰 단독 킬로그 프레임이고 마지막은 전체 화면 맥락입니다."
         )
-        frames = list(event.get("frames") or [])[:3]
         for frame_no, image_bytes in enumerate(frames):
             if frame_no == 0:
                 label = "KILLFEED A · 큰 단독 확대 프레임"
@@ -175,6 +204,7 @@ def verify_combat_events(
                 "replace_summary": bool(parsed.get("replace_summary")),
                 "corrected_summary": str(parsed.get("corrected_summary") or summary),
                 "portrait_reference_used": bool(portrait_sheet),
+                "portrait_match_hints": portrait_hints,
             }
         except (errors.APIError, ValueError, RuntimeError) as exc:
             text = f"{model}: {type(exc).__name__}: {exc}"
