@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header class="hero">
+    <div class="eyebrow">POST-GAME AI COACHING</div>
+    <h1>클립을 올리고,<br>다음 교전을 더 잘하세요.</h1>
+    <p class="subtitle">
+        경기 후 클립을 분석해 Aim, Movement, Positioning, Utility,
+        Decision Making에 대한 구체적인 피드백을 제공합니다.
+    </p>
+    <div id="usageBox" class="usage-box">사용 가능 횟수를 확인하는 중...</div>
+</header>
+
+<section class="panel">
+    <label class="drop-zone">
+        <input id="videoInput" type="file" accept="video/*">
+        <span class="drop-title">VALORANT 클립 선택</span>
+        <span class="muted">MP4 권장 · 분석이 끝나면 서버 임시 파일은 삭제됩니다.</span>
+    </label>
+
+    <video id="videoPlayer" controls playsinline></video>
+    <button id="analyzeBtn" class="primary" disabled>AI 분석 시작</button>
+    <div id="status" class="status"></div>
+</section>
+
+<section class="ad-wrap">
+    <div class="ad-label">ADVERTISEMENT</div>
+    {% if adsense_enabled and adsense_top_slot %}
+    <ins class="adsbygoogle"
+         style="display:block"
+         data-ad-client="{{ adsense_client }}"
+         data-ad-slot="{{ adsense_top_slot }}"
+         data-ad-format="auto"
+         data-full-width-responsive="true"></ins>
+    <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+    {% else %}
+    <div class="ad-placeholder">AdSense 승인 후 상단 광고가 표시됩니다.</div>
+    {% endif %}
+</section>
+
+<section id="results" class="hidden">
+    <div class="score-card">
+        <div>
+            <div class="muted">OVERALL SCORE</div>
+            <div id="overallScore" class="overall-score">--</div>
+        </div>
+        <p id="summary" class="summary"></p>
+    </div>
+
+    <section class="panel">
+        <h2>영역별 점수</h2>
+        <div id="scoreBars"></div>
+    </section>
+
+    <section class="panel">
+        <h2>가장 먼저 개선할 것</h2>
+        <ol id="priorities"></ol>
+    </section>
+
+    <section class="panel">
+        <h2>주요 장면</h2>
+        <p class="muted">타임스탬프를 누르면 해당 장면으로 이동합니다.</p>
+        <div id="events"></div>
+    </section>
+
+    <section class="ad-wrap">
+        <div class="ad-label">ADVERTISEMENT</div>
+        {% if adsense_enabled and adsense_result_slot %}
+        <ins class="adsbygoogle"
+             style="display:block"
+             data-ad-client="{{ adsense_client }}"
+             data-ad-slot="{{ adsense_result_slot }}"
+             data-ad-format="auto"
+             data-full-width-responsive="true"></ins>
+        <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+        {% else %}
+        <div class="ad-placeholder">AdSense 승인 후 결과 페이지 광고가 표시됩니다.</div>
+        {% endif %}
+    </section>
+
+    <section class="panel">
+        <h2>분석 한계</h2>
+        <ul id="limitations"></ul>
+    </section>
+
+    <section class="panel">
+        <div class="eyebrow">YOUR FEEDBACK</div>
+        <h2>이 분석은 어땠나요?</h2>
+
+        <div class="feedback-grid">
+            <button class="feedback-choice" data-rating="helpful">정확했습니다</button>
+            <button class="feedback-choice" data-rating="partial">일부만 맞았습니다</button>
+            <button class="feedback-choice" data-rating="not_helpful">대부분 틀렸습니다</button>
+        </div>
+
+        <div class="categories">
+            <strong>의견 분야</strong>
+            <label><input type="checkbox" value="aim"> Aim</label>
+            <label><input type="checkbox" value="movement"> Movement</label>
+            <label><input type="checkbox" value="positioning"> Positioning</label>
+            <label><input type="checkbox" value="utility"> Utility</label>
+            <label><input type="checkbox" value="decision_making"> Decision Making</label>
+        </div>
+
+        <textarea id="overallComment" maxlength="2000"
+            placeholder="추가 의견을 입력해 주세요."></textarea>
+
+        <button id="submitOverallFeedback" class="secondary" disabled>
+            피드백 보내기
+        </button>
+        <div id="overallFeedbackStatus" class="feedback-status"></div>
+    </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/app.js"></script>
+{% endblock %}

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="{% block description %}VALORANT 플레이 클립을 경기 후 분석해 Aim, Movement, Positioning과 의사결정을 코칭하는 도구입니다.{% endblock %}">
+    <title>{% block title %}VALORANT AI Coach{% endblock %}</title>
+
+    {% if adsense_enabled %}
+    <meta name="google-adsense-account" content="{{ adsense_client }}">
+    <script async
+      src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={{ adsense_client }}"
+      crossorigin="anonymous"></script>
+    {% endif %}
+
+    <link rel="stylesheet" href="/static/style.css">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="nav">
+        <a class="brand" href="/">VALORANT AI COACH</a>
+        <div class="nav-links">
+            <a href="/guide">사용 가이드</a>
+            <a href="/about">About</a>
+        </div>
+    </nav>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <div class="footer-links">
+            <a href="/about">About</a>
+            <a href="/privacy">Privacy</a>
+            <a href="/terms">Terms</a>
+            <a href="/guide">Guide</a>
+        </div>
+
+        <p class="riot-disclaimer">
+            VALORANT AI Coach isn't endorsed by Riot Games and doesn't reflect the views
+            or opinions of Riot Games or anyone officially involved in producing or
+            managing Riot Games properties. Riot Games, and all associated properties
+            are trademarks or registered trademarks of Riot Games, Inc.
+        </p>
+
+        <p class="copyright">© 2026 VALORANT AI Coach</p>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
