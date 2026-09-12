@@ -10,6 +10,37 @@ let selectedFile = null;
 let currentAnalysis = null;
 let selectedOverallRating = null;
 let premiumUnlimited = false;
+let analysisInProgress = false;
+
+function setAnalysisInProgress(active) {
+    analysisInProgress = Boolean(active);
+    document.documentElement.classList.toggle("analysis-in-progress", analysisInProgress);
+}
+
+// Leaving the analysis page would normally cancel the browser request or make
+// its response unreachable. While analysis is running, internal navigation is
+// opened in a separate tab so the original analysis tab stays alive.
+document.addEventListener("click", (event) => {
+    if (!analysisInProgress) return;
+
+    const link = event.target.closest("a[href]");
+    if (!link) return;
+
+    const url = new URL(link.href, window.location.href);
+    if (url.origin !== window.location.origin) return;
+
+    // Login/logout controls and in-page anchors should keep their native behavior.
+    if (url.hash && url.pathname === window.location.pathname) return;
+
+    event.preventDefault();
+    window.open(url.href, "_blank", "noopener,noreferrer");
+}, true);
+
+window.addEventListener("beforeunload", (event) => {
+    if (!analysisInProgress) return;
+    event.preventDefault();
+    event.returnValue = "";
+});
 
 function formatFileSize(bytes) {
     if (!Number.isFinite(bytes) || bytes < 0) return "--";
@@ -398,10 +429,11 @@ function renderResult(data) {
 }
 
 analyzeBtn.addEventListener("click", async () => {
-    if (!selectedFile) return;
+    if (!selectedFile || analysisInProgress) return;
 
+    setAnalysisInProgress(true);
     analyzeBtn.disabled = true;
-    statusBox.textContent = "영상 업로드 및 AI 분석 중...";
+    statusBox.textContent = "영상 업로드 및 AI 분석 중... 다른 메뉴는 새 탭으로 열리며 분석은 계속됩니다.";
 
     const form = new FormData();
     form.append("file", selectedFile);
@@ -437,6 +469,7 @@ analyzeBtn.addEventListener("click", async () => {
     } catch (e) {
         statusBox.textContent = `오류: ${e.message}`;
     } finally {
+        setAnalysisInProgress(false);
         await refreshUsage();
     }
 });
