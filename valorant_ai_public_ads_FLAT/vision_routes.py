@@ -44,6 +44,7 @@ class CombatEventRequest(BaseModel):
 
 class CombatVerifyRequest(BaseModel):
     analysis_id: str = Field(min_length=1, max_length=100)
+    summary: str = Field(default="", max_length=3000)
     events: list[CombatEventRequest] = Field(min_length=1, max_length=6)
 
 
@@ -139,17 +140,22 @@ def build_vision_router(get_auth_context, attach_refreshed_session, public_base_
                     "frames": frames,
                 })
 
-            result = await asyncio.to_thread(verify_combat_events, decoded_events)
+            result = await asyncio.to_thread(
+                verify_combat_events,
+                decoded_events,
+                payload.summary,
+            )
             response = JSONResponse(result)
             return attach_refreshed_session(response, auth)
         except ValueError as exc:
             return JSONResponse({"detail": str(exc)}, status_code=400)
         except Exception as exc:
             print(f"[CombatVerifier] route error: {type(exc).__name__}: {exc}")
-            # Combat verification is a quality layer. Main analysis should remain usable if it fails.
             return JSONResponse({
                 "verified": False,
                 "events": [],
+                "replace_summary": False,
+                "corrected_summary": payload.summary,
                 "reason": "combat_verification_failed",
             }, status_code=200)
 
