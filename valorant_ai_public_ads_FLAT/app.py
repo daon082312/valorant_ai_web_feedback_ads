@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 
 from analyzer import analyze_video
 from feedback_store import save_feedback
-from usage_store import get_remaining, record_success
 
 BASE_DIR = Path(__file__).resolve().parent
 DAILY_LIMIT = int(os.getenv("DAILY_ANALYSIS_LIMIT", "3"))
@@ -143,9 +142,13 @@ async def guide(request: Request):
 
 @app.get("/usage")
 async def usage(request: Request):
-    ip = get_client_ip(request)
+    used = _get_used_count(request)
+
     return {
-        "remaining": get_remaining(ip, DAILY_LIMIT),
+        "remaining": max(
+            DAILY_LIMIT - used,
+            0,
+        ),
         "daily_limit": DAILY_LIMIT,
     }
 
@@ -243,7 +246,70 @@ async def analyze(request: Request, file: UploadFile = File(...)):
                         "code": code,
                         "message": message,
                         "remaining": get_remaining(ip, DAILY_LIMIT),
-                        "daily_limit": DAILY_LIMIT,
+                        "daily_limit": DAILY_LIMIT,USAGE_COOKIE_NAME = "valorant_ai_daily_usage"
+LOCAL_TZ = ZoneInfo("Asia/Seoul")
+
+USAGE_SIGNING_SECRET = (
+    os.getenv("USAGE_SIGNING_SECRET")
+    or os.getenv("GEMINI_API_KEY")
+).encode("utf-8")
+
+
+def _today():
+    return datetime.now(LOCAL_TZ).date().isoformat()
+
+
+def _sign(value):
+    return hmac.new(
+        USAGE_SIGNING_SECRET,
+        value.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _make_usage_cookie(count):
+    payload = json.dumps({
+        "date": _today(),
+        "count": count,
+    })
+
+    encoded = base64.urlsafe_b64encode(
+        payload.encode()
+    ).decode()
+
+    return f"{encoded}.{_sign(encoded)}"
+
+
+def _get_used_count(request: Request):
+    token = request.cookies.get(
+        USAGE_COOKIE_NAME
+    )
+
+    if not token:
+        return 0
+
+    try:
+        encoded, signature = token.rsplit(".", 1)
+
+        if not hmac.compare_digest(
+            signature,
+            _sign(encoded),
+        ):
+            return 0
+
+        payload = json.loads(
+            base64.urlsafe_b64decode(
+                encoded.encode()
+            ).decode()
+        )
+
+        if payload.get("date") != _today():
+            return 0
+
+        return int(payload.get("count", 0))
+
+    except Exception:
+        return 0
                     }
                 },
             )
@@ -274,3 +340,11 @@ async def feedback(payload: FeedbackRequest):
 
     feedback_id = save_feedback(payload.model_dump())
     return {"ok": True, "feedback_id": feedback_id}
+
+    
+    import base64
+import hashlib
+import hmac
+import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
