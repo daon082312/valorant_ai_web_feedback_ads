@@ -37,7 +37,7 @@ class TierPrediction(BaseModel):
     ]
     confidence: float = Field(ge=0, le=1)
     reason: str = Field(
-        description="반드시 자연스러운 한국어로만 작성하는 티어 예측 근거. 게임 고유명사만 영문 허용"
+        description="반드시 자연스러운 한국어로만 작성하는 짧은 티어 예측 근거. 게임 고유명사만 영문 허용"
     )
 
 
@@ -54,10 +54,10 @@ class Event(BaseModel):
     ]
     severity: Literal["positive", "low", "medium", "high"]
     observation: str = Field(
-        description="영상에서 직접 관찰한 사실을 반드시 자연스러운 한국어 문장으로 작성"
+        description="영상에서 직접 관찰한 사실을 자연스러운 한국어 한 문장으로 작성"
     )
     feedback: str = Field(
-        description="해당 장면에 대한 코칭을 반드시 자연스러운 한국어 문장으로 작성"
+        description="해당 장면에 대한 코칭을 자연스러운 한국어 한 문장으로 작성"
     )
     confidence: float = Field(ge=0, le=1)
 
@@ -65,86 +65,84 @@ class Event(BaseModel):
 class ValorantAnalysis(BaseModel):
     overall_score: int = Field(ge=0, le=100)
     summary: str = Field(
-        description="전체 분석 요약을 반드시 자연스러운 한국어로 작성"
+        description="전체 분석 요약을 자연스러운 한국어 최대 두 문장으로 작성"
     )
     tier_prediction: TierPrediction
     scores: ScoreSet
-    events: list[Event]
+    events: list[Event] = Field(max_length=3)
     top_priorities: list[str] = Field(
-        description="가장 먼저 개선할 점을 각각 자연스러운 한국어 문장으로 작성"
+        max_length=2,
+        description="가장 먼저 개선할 점 최대 2개를 각각 짧은 한국어 문장으로 작성",
     )
     limitations: list[str] = Field(
-        description="분석 한계를 각각 자연스러운 한국어 문장으로 작성"
+        max_length=2,
+        description="분석 한계 최대 2개를 각각 짧은 한국어 문장으로 작성",
     )
 
 
 PROMPT = """
 당신은 한국어로 답변하는 VALORANT 경기 후 코칭 전문가입니다. 첨부된 클립 전체를 시간 순서대로 분석하세요.
 
-출력 언어 규칙 — 반드시 지키세요:
-- 사용자가 보는 모든 자연어 문장은 반드시 한국어로 작성합니다.
+출력 언어 규칙:
+- 사용자가 읽는 모든 자연어 문장은 반드시 한국어로 작성합니다.
 - summary, tier_prediction.reason, events[].observation, events[].feedback,
-  top_priorities의 모든 항목, limitations의 모든 항목을 반드시 한국어로 작성합니다.
-- 영어 문장이나 영어 단락을 작성하지 마세요.
-- VALORANT, Aim, Movement, Positioning, Utility, Agent 이름, 무기 이름처럼
-  게임에서 통용되는 고유명사/용어만 필요한 경우 영문 표기를 허용합니다.
-- 영어 용어를 사용하더라도 설명 문장은 한국어 문장이어야 합니다.
-- JSON 키, enum 값(category, severity, tier)은 스키마에 정의된 영문 값을 그대로 사용하되,
-  사용자가 읽는 설명 텍스트는 모두 한국어여야 합니다.
+  top_priorities, limitations를 모두 한국어로 작성합니다.
+- JSON 키와 enum 값만 스키마에 정의된 영문 값을 사용합니다.
 
 분석 규칙:
-- 영상에서 직접 확인 가능한 내용만 말합니다. 보이지 않는 적, 스킬, 팀원의 의도를 추측하지 않습니다.
-- 관찰과 코칭을 분리하고, 불확실하면 confidence를 낮춥니다.
+- 영상에서 직접 확인 가능한 내용만 말하고 보이지 않는 정보는 추측하지 않습니다.
+- 불확실하면 confidence를 낮춥니다.
 - 가능한 경우 MM:SS timestamp를 사용합니다.
 - Aim, Movement, Positioning, Utility, Decision Making, Teamplay를 평가합니다.
-- reaction time(ms), DPI, frame-perfect counter-strafe timing처럼 영상으로 정확히 측정할 수 없는 수치를 주장하지 않습니다.
+- 영상으로 정확히 측정할 수 없는 reaction time(ms), DPI, frame-perfect timing을 주장하지 않습니다.
 - overall_score와 영역별 점수는 0~100입니다.
-- top_priorities는 최대 3개입니다.
-- events는 중요한 장면만 최대 5개 반환합니다. 비슷한 장면은 합칩니다.
-- limitations는 핵심 항목 최대 3개입니다.
-- summary는 최대 3문장, event observation/feedback은 각각 1~2문장으로 간결하게 작성합니다.
+- 중요한 장면만 최대 3개 반환하고 비슷한 장면은 합칩니다.
+- top_priorities는 최대 2개, limitations는 최대 2개입니다.
+- summary는 최대 2문장, observation과 feedback은 각각 한 문장으로 짧고 구체적으로 작성합니다.
 - 한 번의 킬이나 실수만으로 습관을 단정하지 않습니다.
-- 단순 킬 성공 여부보다 크로스헤어 위치, 노출 각도, 커버, 이동, 유틸리티, 교전 선택을 우선 평가합니다.
+- 킬 성공 여부보다 크로스헤어 위치, 노출 각도, 커버, 이동, 유틸리티, 교전 선택을 우선 평가합니다.
 
 티어 예측:
 - 실제 랭크/MMR이 아니라 이 클립에서 관찰되는 플레이 수준의 추정치입니다.
 - 가능한 티어: Iron, Bronze, Silver, Gold, Platinum, Diamond, Ascendant, Immortal, Radiant.
 - Aim만 보지 말고 Movement, Positioning, Utility, Decision Making과 일관성을 함께 봅니다.
-- 짧거나 근거가 부족한 클립은 tier_prediction.confidence를 낮게 주며, 근거가 매우 적으면 0.45 이하로 둡니다.
-- reason은 핵심 근거만 한국어 1~2문장으로 작성합니다.
-- 실제 랭크와 다를 수 있음을 limitations에 한국어로 포함합니다.
-
-최종 확인:
-JSON을 반환하기 직전에 사용자가 읽는 모든 텍스트 필드를 확인하세요.
-영어 문장이 있으면 의미를 유지한 채 자연스러운 한국어로 바꾼 뒤 반환하세요.
+- 짧거나 근거가 부족한 클립은 confidence를 낮게 주며, 근거가 매우 적으면 0.45 이하로 둡니다.
+- reason은 한국어 한 문장으로 핵심 근거만 작성합니다.
+- 실제 랭크와 다를 수 있음을 limitations에 포함합니다.
 """
 
 
-# Cheapest supported video model first. More capable models are fallback only.
-DEFAULT_MODELS = [
-    "gemini-2.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-3.5-flash-lite",
-    "gemini-3.6-flash",
-]
+DEFAULT_PRIMARY_MODEL = "gemini-2.5-flash-lite"
+
+
+def _truthy_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _models() -> list[str]:
-    primary = os.getenv("GEMINI_PRIMARY_MODEL", "gemini-2.5-flash-lite").strip()
-    env_models = os.getenv("GEMINI_MODELS", "").strip()
+    """Use only the cheapest model by default.
 
-    candidates: list[str] = []
-    if primary:
-        candidates.append(primary)
+    Existing GEMINI_MODELS values are ignored unless the operator explicitly
+    enables expensive fallback. This prevents a temporary Lite failure from
+    unexpectedly generating a much more expensive 3.x request.
+    """
+    primary = os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_PRIMARY_MODEL).strip()
+    if not primary:
+        primary = DEFAULT_PRIMARY_MODEL
 
-    if env_models:
-        candidates.extend(
-            x.strip()
-            for x in env_models.split(",")
-            if x.strip()
-        )
-    else:
-        candidates.extend(DEFAULT_MODELS)
+    candidates = [primary]
+
+    if _truthy_env("ALLOW_EXPENSIVE_MODEL_FALLBACK", False):
+        env_models = os.getenv("GEMINI_MODELS", "").strip()
+        if env_models:
+            candidates.extend(
+                x.strip()
+                for x in env_models.split(",")
+                if x.strip()
+            )
 
     seen = set()
     ordered = []
@@ -156,13 +154,13 @@ def _models() -> list[str]:
 
 
 def _video_fps() -> float:
-    # 1.5 FPS costs much less than 4 FPS while retaining more temporal detail
-    # than Gemini's 1 FPS default. Override with VIDEO_ANALYSIS_FPS if needed.
-    raw = os.getenv("VIDEO_ANALYSIS_FPS", "1.5").strip()
+    # 1 FPS is Gemini's normal low-cost temporal sampling rate.
+    # It is substantially cheaper than the earlier 4 FPS and 1.5 FPS modes.
+    raw = os.getenv("VIDEO_ANALYSIS_FPS", "1").strip()
     try:
         value = float(raw)
     except ValueError:
-        value = 1.5
+        value = 1.0
     return min(24.0, max(0.1, value))
 
 
@@ -194,9 +192,8 @@ def _build_prompt(calibration: dict) -> str:
     if not calibration_prompt:
         return PROMPT
 
-    # Only aggregate statistics are appended. Raw user comments never become
-    # model instructions, which prevents feedback prompt injection.
-    return f"{PROMPT}\n\n{calibration_prompt[:3500]}"
+    # Aggregate-only calibration; raw user comments are never model instructions.
+    return f"{PROMPT}\n\n{calibration_prompt[:2200]}"
 
 
 def _video_part(uploaded, fps: float) -> types.Part:
@@ -219,7 +216,7 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
 
     for model in _models():
         print(
-            f"[Gemini] {model} 시도 · video={fps:g} FPS · low-res · "
+            f"[Gemini] {model} 시도 · economy · video={fps:g} FPS · low-res · "
             f"feedback n={calibration.get('sample_size', 0)}"
         )
 
@@ -237,7 +234,10 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                         media_resolution=(
                             types.MediaResolution.MEDIA_RESOLUTION_LOW
                         ),
-                        max_output_tokens=1400,
+                        thinking_config=types.ThinkingConfig(
+                            thinking_budget=0
+                        ),
+                        max_output_tokens=900,
                     ),
                 )
 
@@ -253,6 +253,7 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                 result["model_used"] = model
                 result["analysis_fps"] = fps
                 result["media_resolution"] = "low"
+                result["economy_mode"] = True
                 result["feedback_calibration_used"] = bool(
                     calibration.get("prompt")
                 )
@@ -296,13 +297,12 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                 raise
 
             except (ValueError, RuntimeError) as exc:
-                # Invalid/empty structured output can fall back to the next model.
                 errors_seen.append(f"{model}: {exc}")
                 break
 
-    details = "\n\n".join(errors_seen[-4:])
+    details = "\n\n".join(errors_seen[-2:])
     raise RuntimeError(
-        "Gemini 분석 모델을 사용할 수 없거나 현재 서버가 혼잡합니다.\n\n"
+        "저비용 Gemini 분석 모델을 현재 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.\n\n"
         f"{details}"
     )
 
