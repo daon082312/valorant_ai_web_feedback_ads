@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from combat_verifier import verify_combat_events
 from valorant_reference import catalog_payload
 from vision_learning import (
     decode_data_url,
@@ -31,6 +32,19 @@ class VisionTrainRequest(BaseModel):
     event_index: int = Field(default=-1, ge=-1, le=100)
     predicted_label: str = Field(default="", max_length=60)
     agent_label: str = Field(default="", max_length=60)
+
+
+class CombatEventRequest(BaseModel):
+    event_index: int = Field(ge=0, le=20)
+    timestamp: str = Field(default="", max_length=20)
+    observation: str = Field(default="", max_length=1000)
+    feedback: str = Field(default="", max_length=1400)
+    frames: list[str] = Field(min_length=2, max_length=3)
+
+
+class CombatVerifyRequest(BaseModel):
+    analysis_id: str = Field(min_length=1, max_length=100)
+    events: list[CombatEventRequest] = Field(min_length=1, max_length=6)
 
 
 def build_vision_router(get_auth_context, attach_refreshed_session, public_base_url: str) -> APIRouter:
@@ -82,9 +96,6 @@ def build_vision_router(get_auth_context, attach_refreshed_session, public_base_
         if not auth:
             return JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401)
 
-        # Official/reference HUD recognition can work even before the optional
-        # user-training tables have enough samples. The database classifier is
-        # simply merged in when configured.
         try:
             image_bytes = decode_data_url(payload.image_data)
             result = await asyncio.to_thread(
@@ -100,6 +111,47 @@ def build_vision_router(get_auth_context, attach_refreshed_session, public_base_
         except Exception as exc:
             print(f"[VisionLearning] prediction error: {type(exc).__name__}: {exc}")
             return JSONResponse({"ready": False, "reason": "prediction_error"}, status_code=200)
+
+    @router.post("/vision/combat-verify")
+    async def combat_verify(request: Request, payload: CombatVerifyRequest):
+        if not same_origin(request):
+            return JSONResponse({"detail": "잘못된 요청 출처입니다."}, status_code=403)
+        auth = await auth_for(request)
+        if not auth:
+            return JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401)
+
+        try:
+            decoded_events = []
+            total_bytes = 0
+            for event in payload.events:
+                frames = []
+                for image_data in event.frames[:3]:
+                    raw = decode_data_url(image_data)
+                    total_bytes += len(raw)
+                    if total_bytes > 8 * 1024 * 1024:
+                        return JSONResponse({"detail": "전투 검증 이미지가 너무 큽니다."}, status_code=413)
+                    frames.append(raw)
+                decoded_events.append({
+                    "event_index": event.event_index,
+                    "timestamp": event.timestamp,
+                    "observation": event.observation,
+                    "feedback": event.feedback,
+                    "frames": frames,
+                })
+
+            result = await asyncio.to_thread(verify_combat_events, decoded_events)
+            response = JSONResponse(result)
+            return attach_refreshed_session(response, auth)
+        except ValueError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=400)
+        except Exception as exc:
+            print(f"[CombatVerifier] route error: {type(exc).__name__}: {exc}")
+            # Combat verification is a quality layer. Main analysis should remain usable if it fails.
+            return JSONResponse({
+                "verified": False,
+                "events": [],
+                "reason": "combat_verification_failed",
+            }, status_code=200)
 
     @router.post("/vision/train")
     async def vision_train(request: Request, payload: VisionTrainRequest):
