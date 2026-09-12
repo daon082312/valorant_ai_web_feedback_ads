@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from valorant_reference import catalog_payload
 from vision_learning import (
     decode_data_url,
     model_status,
@@ -19,6 +20,7 @@ from vision_learning import (
 class VisionPredictRequest(BaseModel):
     target_type: str = Field(pattern="^(agent|skill)$")
     image_data: str = Field(min_length=20, max_length=3_000_000)
+    agent_label: str = Field(default="", max_length=60)
 
 
 class VisionTrainRequest(BaseModel):
@@ -28,6 +30,7 @@ class VisionTrainRequest(BaseModel):
     analysis_id: str = Field(min_length=1, max_length=100)
     event_index: int = Field(default=-1, ge=-1, le=100)
     predicted_label: str = Field(default="", max_length=60)
+    agent_label: str = Field(default="", max_length=60)
 
 
 def build_vision_router(get_auth_context, attach_refreshed_session, public_base_url: str) -> APIRouter:
@@ -58,6 +61,19 @@ def build_vision_router(get_auth_context, attach_refreshed_session, public_base_
             print(f"[VisionLearning] status error: {type(exc).__name__}: {exc}")
             return JSONResponse({"configured": False, "detail": "학습 모델 상태를 읽지 못했습니다."}, status_code=503)
 
+    @router.get("/vision/catalog")
+    async def vision_catalog(request: Request, agent: str = ""):
+        auth = await auth_for(request)
+        if not auth:
+            return JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401)
+        try:
+            payload = await asyncio.to_thread(catalog_payload, agent[:60])
+            response = JSONResponse(payload)
+            return attach_refreshed_session(response, auth)
+        except Exception as exc:
+            print(f"[ValorantReference] catalog error: {type(exc).__name__}: {exc}")
+            return JSONResponse({"ready": False, "agent": None, "abilities": []}, status_code=200)
+
     @router.post("/vision/predict")
     async def vision_predict(request: Request, payload: VisionPredictRequest):
         if not same_origin(request):
@@ -65,12 +81,18 @@ def build_vision_router(get_auth_context, attach_refreshed_session, public_base_
         auth = await auth_for(request)
         if not auth:
             return JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401)
-        if not vision_learning_is_configured():
-            return JSONResponse({"ready": False, "reason": "not_configured"})
 
+        # Official/reference HUD recognition can work even before the optional
+        # user-training tables have enough samples. The database classifier is
+        # simply merged in when configured.
         try:
             image_bytes = decode_data_url(payload.image_data)
-            result = await asyncio.to_thread(predict_image, payload.target_type, image_bytes)
+            result = await asyncio.to_thread(
+                predict_image,
+                payload.target_type,
+                image_bytes,
+                payload.agent_label,
+            )
             response = JSONResponse(result)
             return attach_refreshed_session(response, auth)
         except ValueError as exc:
@@ -103,6 +125,7 @@ def build_vision_router(get_auth_context, attach_refreshed_session, public_base_
                 label=payload.label,
                 image_bytes=image_bytes,
                 predicted_label=payload.predicted_label,
+                agent_label=payload.agent_label,
             )
             response = JSONResponse(result)
             return attach_refreshed_session(response, auth)
