@@ -128,6 +128,9 @@ PROMPT = """
   측정했다고 주장하지 마세요.
 - overall_score와 각 점수는 0~100입니다.
 - top_priorities는 최대 3개입니다.
+- events는 중복되거나 중요도가 낮은 장면을 제외하고 최대 8개만 반환합니다.
+- limitations는 핵심적인 항목 최대 4개만 반환합니다.
+- summary와 각 feedback은 짧고 구체적으로 작성하여 불필요하게 긴 설명을 피합니다.
 
 정확도 규칙:
 - 같은 결론을 뒷받침하는 장면이 여러 개 있으면 일관성을 근거로 사용할 수 있습니다.
@@ -178,13 +181,14 @@ def _models() -> list[str]:
 
 
 def _video_fps() -> float:
-    raw = os.getenv("VIDEO_ANALYSIS_FPS", "4").strip()
+    # 2 FPS keeps twice the temporal detail of Gemini's 1 FPS default while
+    # using roughly half the visual-frame input of the previous 4 FPS setting.
+    raw = os.getenv("VIDEO_ANALYSIS_FPS", "2").strip()
     try:
         value = float(raw)
     except ValueError:
-        value = 4.0
+        value = 2.0
 
-    # Gemini currently accepts >0 and <=24 FPS. Keep the same API bound here.
     return min(24.0, max(0.1, value))
 
 
@@ -270,7 +274,7 @@ def _generate(
 
     for model in _models():
         print(
-            f"[Gemini] {model} 시도 · video={fps:g} FPS · "
+            f"[Gemini] {model} 시도 · video={fps:g} FPS · low-res · "
             f"feedback n={calibration.get('sample_size', 0)}"
         )
 
@@ -292,6 +296,9 @@ def _generate(
                             ValorantAnalysis
                         ),
                         temperature=0.2,
+                        media_resolution=(
+                            types.MediaResolution.MEDIA_RESOLUTION_LOW
+                        ),
                     ),
                 )
 
@@ -310,6 +317,7 @@ def _generate(
 
                 result["model_used"] = model
                 result["analysis_fps"] = fps
+                result["media_resolution"] = "low"
                 result["feedback_calibration_used"] = bool(
                     calibration.get("prompt")
                 )
