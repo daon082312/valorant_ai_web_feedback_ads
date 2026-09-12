@@ -36,7 +36,9 @@ class TierPrediction(BaseModel):
         "Radiant",
     ]
     confidence: float = Field(ge=0, le=1)
-    reason: str
+    reason: str = Field(
+        description="반드시 자연스러운 한국어로만 작성하는 티어 예측 근거. 게임 고유명사만 영문 허용"
+    )
 
 
 class Event(BaseModel):
@@ -51,25 +53,46 @@ class Event(BaseModel):
         "other",
     ]
     severity: Literal["positive", "low", "medium", "high"]
-    observation: str
-    feedback: str
+    observation: str = Field(
+        description="영상에서 직접 관찰한 사실을 반드시 자연스러운 한국어 문장으로 작성"
+    )
+    feedback: str = Field(
+        description="해당 장면에 대한 코칭을 반드시 자연스러운 한국어 문장으로 작성"
+    )
     confidence: float = Field(ge=0, le=1)
 
 
 class ValorantAnalysis(BaseModel):
     overall_score: int = Field(ge=0, le=100)
-    summary: str
+    summary: str = Field(
+        description="전체 분석 요약을 반드시 자연스러운 한국어로 작성"
+    )
     tier_prediction: TierPrediction
     scores: ScoreSet
     events: list[Event]
-    top_priorities: list[str]
-    limitations: list[str]
+    top_priorities: list[str] = Field(
+        description="가장 먼저 개선할 점을 각각 자연스러운 한국어 문장으로 작성"
+    )
+    limitations: list[str] = Field(
+        description="분석 한계를 각각 자연스러운 한국어 문장으로 작성"
+    )
 
 
 PROMPT = """
-당신은 VALORANT 경기 후 코칭 전문가입니다. 첨부된 클립 전체를 시간 순서대로 분석하세요.
+당신은 한국어로 답변하는 VALORANT 경기 후 코칭 전문가입니다. 첨부된 클립 전체를 시간 순서대로 분석하세요.
 
-규칙:
+출력 언어 규칙 — 반드시 지키세요:
+- 사용자가 보는 모든 자연어 문장은 반드시 한국어로 작성합니다.
+- summary, tier_prediction.reason, events[].observation, events[].feedback,
+  top_priorities의 모든 항목, limitations의 모든 항목을 반드시 한국어로 작성합니다.
+- 영어 문장이나 영어 단락을 작성하지 마세요.
+- VALORANT, Aim, Movement, Positioning, Utility, Agent 이름, 무기 이름처럼
+  게임에서 통용되는 고유명사/용어만 필요한 경우 영문 표기를 허용합니다.
+- 영어 용어를 사용하더라도 설명 문장은 한국어 문장이어야 합니다.
+- JSON 키, enum 값(category, severity, tier)은 스키마에 정의된 영문 값을 그대로 사용하되,
+  사용자가 읽는 설명 텍스트는 모두 한국어여야 합니다.
+
+분석 규칙:
 - 영상에서 직접 확인 가능한 내용만 말합니다. 보이지 않는 적, 스킬, 팀원의 의도를 추측하지 않습니다.
 - 관찰과 코칭을 분리하고, 불확실하면 confidence를 낮춥니다.
 - 가능한 경우 MM:SS timestamp를 사용합니다.
@@ -89,7 +112,11 @@ PROMPT = """
 - Aim만 보지 말고 Movement, Positioning, Utility, Decision Making과 일관성을 함께 봅니다.
 - 짧거나 근거가 부족한 클립은 tier_prediction.confidence를 낮게 주며, 근거가 매우 적으면 0.45 이하로 둡니다.
 - reason은 핵심 근거만 한국어 1~2문장으로 작성합니다.
-- 실제 랭크와 다를 수 있음을 limitations에 포함합니다.
+- 실제 랭크와 다를 수 있음을 limitations에 한국어로 포함합니다.
+
+최종 확인:
+JSON을 반환하기 직전에 사용자가 읽는 모든 텍스트 필드를 확인하세요.
+영어 문장이 있으면 의미를 유지한 채 자연스러운 한국어로 바꾼 뒤 반환하세요.
 """
 
 
