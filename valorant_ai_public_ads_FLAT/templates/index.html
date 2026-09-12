@@ -117,7 +117,7 @@
 
     <section class="panel">
         <h2>주요 장면</h2>
-        <p class="muted">타임스탬프를 누르면 해당 장면으로 이동합니다. 판별된 요원의 실제 스킬 후보만 정정 학습에 사용됩니다.</p>
+        <p class="muted">타임스탬프를 누르면 해당 장면으로 이동합니다. 주요 장면의 킬/데스는 직전·직후 고해상도 프레임으로 한 번 더 검증합니다.</p>
         <div id="events"></div>
     </section>
 
@@ -175,4 +175,5 @@
 
 {% block scripts %}
 <script src="/static/app.js?v=20260913-vision2"></script>
+<script src="/static/combat_verify.js?v=20260913-combat1"></script>
 {% endblock %}
