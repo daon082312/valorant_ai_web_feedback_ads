@@ -5,12 +5,16 @@ const statusBox = document.getElementById("status");
 const usageBox = document.getElementById("usageBox");
 const fileInfo = document.getElementById("fileInfo");
 const results = document.getElementById("results");
+const saveAnalysisBtn = document.getElementById("saveAnalysisBtn");
+const saveAnalysisStatus = document.getElementById("saveAnalysisStatus");
 
 let selectedFile = null;
 let currentAnalysis = null;
 let selectedOverallRating = null;
 let premiumUnlimited = false;
 let analysisInProgress = false;
+let currentAgentAbilities = [];
+let valorantCatalogAgents = [];
 
 function setAnalysisInProgress(active) {
     analysisInProgress = Boolean(active);
@@ -86,6 +90,11 @@ function resetOverallFeedback() {
     if (message) message.textContent = "";
 }
 
+function resetSaveControls() {
+    if (saveAnalysisBtn) saveAnalysisBtn.disabled = true;
+    if (saveAnalysisStatus) saveAnalysisStatus.textContent = "";
+}
+
 async function refreshUsage() {
     try {
         const r = await fetch("/usage", {credentials: "same-origin"});
@@ -138,10 +147,61 @@ async function refreshUsage() {
     }
 }
 
+async function fetchValorantCatalog(agent = "") {
+    const suffix = agent ? `?agent=${encodeURIComponent(agent)}` : "";
+    const response = await fetch(`/vision/catalog${suffix}`, {credentials: "same-origin"});
+    const data = await readJsonResponse(response, "VALORANT UI 기준 데이터");
+    if (!response.ok) throw new Error(data.detail || "요원/스킬 기준 데이터를 불러오지 못했습니다.");
+    return data;
+}
+
+async function populateAgentOptions() {
+    try {
+        const data = await fetchValorantCatalog();
+        valorantCatalogAgents = Array.isArray(data.agents) ? data.agents : [];
+        const list = document.getElementById("agentOptions");
+        if (!list) return;
+        list.innerHTML = "";
+        for (const agent of valorantCatalogAgents) {
+            const option = document.createElement("option");
+            option.value = agent.name;
+            list.appendChild(option);
+        }
+    } catch (error) {
+        console.warn("VALORANT 요원 목록 로드 생략", error);
+    }
+}
+
+async function fetchAgentKit(agent) {
+    const name = String(agent || "").trim();
+    if (!name || name === "Unknown") return [];
+
+    const cached = valorantCatalogAgents.find(
+        item => String(item.name || "").toLowerCase() === name.toLowerCase()
+    );
+    if (cached && Array.isArray(cached.abilities)) return cached.abilities;
+
+    try {
+        const data = await fetchValorantCatalog(name);
+        return Array.isArray(data.abilities) ? data.abilities : [];
+    } catch (error) {
+        console.warn("VALORANT 스킬 목록 로드 생략", error);
+        return [];
+    }
+}
+
+function canonicalFromList(value, allowed) {
+    const wanted = String(value || "").trim().toLowerCase();
+    if (!wanted) return null;
+    return (allowed || []).find(item => String(item).toLowerCase() === wanted) || null;
+}
+
 videoInput.addEventListener("change", async () => {
     selectedFile = videoInput.files[0] || null;
     currentAnalysis = null;
+    currentAgentAbilities = [];
     resetOverallFeedback();
+    resetSaveControls();
 
     if (selectedFile) {
         if (fileInfo) {
@@ -216,7 +276,6 @@ async function captureFrameAt(seconds) {
         videoPlayer.currentTime = Math.max(0, Math.min(previousTime, duration || previousTime));
     }
     if (!wasPaused) {
-        // Do not resume automatically; timestamp navigation in this app is intentionally pause-first.
         videoPlayer.pause();
     }
 
@@ -237,19 +296,20 @@ async function visionRequest(path, payload) {
     return data;
 }
 
-async function predictVision(targetType, seconds) {
+async function predictVision(targetType, seconds, agentLabel = "") {
     try {
         const imageData = await captureFrameAt(seconds);
         const prediction = await visionRequest("/vision/predict", {
             target_type: targetType,
-            image_data: imageData
+            image_data: imageData,
+            agent_label: agentLabel || ""
         });
-        if (!prediction.ready || !Array.isArray(prediction.candidates) || prediction.candidates.length < 2) {
-            return {ready: false, reason: prediction.reason || "needs_more_labels"};
+        if (!prediction.ready) {
+            return {ready: false, reason: prediction.reason || "needs_more_labels", ...prediction};
         }
         return prediction;
     } catch (error) {
-        console.warn("학습 모델 예측 생략", error);
+        console.warn("학습/UI 기준 모델 예측 생략", error);
         return {ready: false, reason: "prediction_failed"};
     }
 }
@@ -266,7 +326,8 @@ async function trainVision({targetType, label, seconds, eventIndex, predictedLab
         label: cleanLabel,
         analysis_id: currentAnalysis.analysis_id,
         event_index: eventIndex,
-        predicted_label: predictedLabel || ""
+        predicted_label: predictedLabel || "",
+        agent_label: targetType === "skill" ? (currentAnalysis.agent_prediction?.agent || "") : ""
     });
 }
 
@@ -282,40 +343,70 @@ async function applyLearnedVisionPredictions(data) {
 
     const agentPred = await predictVision("agent", agentSampleTime(data));
     data.learned_agent_prediction = agentPred;
+
+    const referenceBased = String(agentPred.source || "").includes("valorant_ui_reference");
+    const agentPredictionUsable = agentPred.ready && (
+        (referenceBased && Number(agentPred.confidence || 0) >= 0.68) ||
+        (Number(agentPred.sample_count || 0) >= 2 && Number(agentPred.confidence || 0) >= 0.60)
+    );
+
     if (
-        agentPred.ready &&
-        agentPred.sample_count >= 2 &&
-        agentPred.confidence >= 0.60 &&
+        agentPredictionUsable &&
         (
             !data.agent_prediction ||
             data.agent_prediction.agent === "Unknown" ||
             Number(data.agent_prediction.confidence || 0) < 0.65 ||
-            agentPred.confidence >= 0.78
+            Number(agentPred.confidence || 0) >= 0.78
         )
     ) {
         const original = data.agent_prediction?.agent || "Unknown";
         data.agent_prediction = {
             agent: agentPred.label,
-            confidence: Math.max(Number(data.agent_prediction?.confidence || 0), agentPred.confidence),
-            reason: `사용자 정정 데이터로 학습된 이미지 모델이 ${agentPred.label}로 보정했습니다. Gemini의 최초 판별은 ${original}였습니다.`,
-            learned_model: true,
+            confidence: Math.max(Number(data.agent_prediction?.confidence || 0), Number(agentPred.confidence || 0)),
+            reason: referenceBased
+                ? `VALORANT HUD 스킬 아이콘 기준 데이터로 ${agentPred.label}를 교차 확인했습니다. Gemini의 최초 판별은 ${original}였습니다.`
+                : `사용자 정정 데이터로 학습된 이미지 모델이 ${agentPred.label}로 보정했습니다. Gemini의 최초 판별은 ${original}였습니다.`,
+            learned_model: !referenceBased,
+            reference_model: referenceBased,
             original_agent: original
         };
     }
 
+    const finalAgent = data.agent_prediction?.agent || "";
+    currentAgentAbilities = await fetchAgentKit(finalAgent);
+    data.agent_ability_catalog = currentAgentAbilities;
+
     const events = Array.isArray(data.events) ? data.events : [];
     for (const event of events) {
+        if (event.ability_name && currentAgentAbilities.length) {
+            const canonical = canonicalFromList(event.ability_name, currentAgentAbilities);
+            if (canonical) {
+                event.ability_name = canonical;
+            } else {
+                event.original_ability_name = event.ability_name;
+                event.ability_name = null;
+                event.ability_confidence = 0;
+                event.ability_removed_by_kit_validation = true;
+            }
+        }
+
         if (!(event.ability_name || event.category === "utility")) continue;
-        const prediction = await predictVision("skill", timestampToSeconds(event.timestamp));
+        const prediction = await predictVision(
+            "skill",
+            timestampToSeconds(event.timestamp),
+            finalAgent
+        );
         event.learned_skill_prediction = prediction;
+        const canonicalPrediction = canonicalFromList(prediction.label, currentAgentAbilities);
         if (
             prediction.ready &&
-            prediction.sample_count >= 2 &&
-            prediction.confidence >= 0.72 &&
-            (!event.ability_name || Number(event.ability_confidence || 0) < 0.70 || prediction.confidence >= 0.82)
+            canonicalPrediction &&
+            Number(prediction.sample_count || 0) >= 2 &&
+            Number(prediction.confidence || 0) >= 0.72 &&
+            (!event.ability_name || Number(event.ability_confidence || 0) < 0.70 || Number(prediction.confidence || 0) >= 0.82)
         ) {
             event.original_ability_name = event.ability_name || null;
-            event.ability_name = prediction.label;
+            event.ability_name = canonicalPrediction;
             event.ability_confidence = prediction.confidence;
             event.ability_from_learned_model = true;
         }
@@ -353,21 +444,36 @@ async function saveAnalysisHistory(data, fileName) {
             })
         });
 
+        const body = await readJsonResponse(response, "분석 저장 서버");
         if (!response.ok) {
-            let detail = "";
-            try {
-                const body = await response.json();
-                detail = body.detail || "";
-            } catch (_) {
-                // History saving is optional and must not break analysis display.
-            }
-            console.warn("분석 기록 저장 실패", response.status, detail);
-            return false;
+            const detail = body && body.detail;
+            const message = typeof detail === "object"
+                ? (detail.message || JSON.stringify(detail))
+                : (detail || `HTTP ${response.status}`);
+            console.warn("분석 기록 저장 실패", response.status, message);
+            return {ok: false, detail: message, status: response.status};
         }
-        return true;
+        return {ok: true, analysis_id: body.analysis_id || data?.analysis_id || ""};
     } catch (error) {
         console.warn("분석 기록 저장 실패", error);
-        return false;
+        return {ok: false, detail: error.message || "저장 요청 실패"};
+    }
+}
+
+function renderFeedbackCalibration(data) {
+    const root = document.getElementById("feedbackCalibrationNotice");
+    if (!root) return;
+
+    const count = Number(data.feedback_calibration_samples || 0);
+    const used = Boolean(data.feedback_calibration_used);
+    root.classList.toggle("active", used);
+
+    if (used) {
+        root.textContent = `피드백 보정 적용됨 · 최근 ${count}건의 평가 통계를 이번 분석에 반영했습니다.`;
+    } else if (count > 0) {
+        root.textContent = `피드백 ${count}건 수집됨 · 아직 보정 기준에 필요한 표본 수를 충족하지 않아 이번 분석에는 강제 적용하지 않았습니다.`;
+    } else {
+        root.textContent = "피드백 보정 데이터가 아직 없습니다. 평가가 쌓이면 다음 분석부터 통계적으로 반영됩니다.";
     }
 }
 
@@ -414,10 +520,15 @@ function renderAgent(prediction) {
     const agent = prediction?.agent || "Unknown";
     const conf = Math.round(Math.max(0, Math.min(1, Number(prediction?.confidence || 0))) * 100);
     name.textContent = agent === "Unknown" ? "판별 불가" : agent;
-    confidence.textContent = `신뢰도 ${conf}%${prediction?.learned_model ? " · 학습 모델 보정" : ""}`;
+    const sourceText = prediction?.reference_model
+        ? " · VALORANT UI 기준 보정"
+        : prediction?.learned_model
+            ? " · 사용자 학습 모델 보정"
+            : "";
+    confidence.textContent = `신뢰도 ${conf}%${sourceText}`;
     reason.textContent = prediction?.reason || "영상에서 에이전트를 확실히 판별하지 못했습니다.";
     input.value = agent === "Unknown" ? "" : agent;
-    status.textContent = "틀렸다면 실제 에이전트명을 입력하고 ‘정답으로 학습’을 누르세요. 이미지 원본은 저장하지 않습니다.";
+    status.textContent = "틀렸다면 실제 에이전트를 선택하고 ‘정답으로 학습’을 누르세요. 이미지 원본은 저장하지 않습니다.";
 }
 
 function renderTier(prediction) {
@@ -528,8 +639,24 @@ function renderEvents(events) {
         skillCorrection.className = "vision-correction";
         const skillInput = document.createElement("input");
         skillInput.maxLength = 60;
-        skillInput.placeholder = "틀렸다면 실제 스킬명 (예: Tailwind)";
+        skillInput.placeholder = currentAgentAbilities.length
+            ? "실제 스킬을 선택하세요"
+            : "틀렸다면 실제 스킬명";
         skillInput.value = event.ability_name || "";
+
+        if (currentAgentAbilities.length) {
+            const dataListId = `skillOptions-${index}`;
+            skillInput.setAttribute("list", dataListId);
+            const list = document.createElement("datalist");
+            list.id = dataListId;
+            for (const ability of currentAgentAbilities) {
+                const option = document.createElement("option");
+                option.value = ability;
+                list.appendChild(option);
+            }
+            skillCorrection.appendChild(list);
+        }
+
         const skillTrain = document.createElement("button");
         skillTrain.type = "button";
         skillTrain.textContent = "정답으로 학습";
@@ -539,6 +666,9 @@ function renderEvents(events) {
             skillTrain.disabled = true;
             skillStatus.textContent = "학습 중...";
             try {
+                if (currentAgentAbilities.length && !canonicalFromList(skillInput.value, currentAgentAbilities)) {
+                    throw new Error(`${currentAnalysis.agent_prediction?.agent || "현재 요원"}의 실제 스킬 목록에서 선택해 주세요.`);
+                }
                 const result = await trainVision({
                     targetType: "skill",
                     label: skillInput.value,
@@ -588,7 +718,7 @@ function renderEvents(events) {
                 up.classList.remove("selected");
                 down.classList.remove("selected");
                 button.classList.add("selected");
-                msg.textContent = "저장됨";
+                msg.textContent = "저장됨 · 다음 분석부터 집계에 반영";
             } catch (e) {
                 msg.textContent = e.message;
             }
@@ -609,6 +739,7 @@ function renderResult(data) {
 
     document.getElementById("overallScore").textContent = data.overall_score;
     document.getElementById("summary").textContent = data.summary;
+    renderFeedbackCalibration(data);
     renderAgent(data.agent_prediction);
     renderTier(data.tier_prediction);
     renderScores(data.scores);
@@ -630,6 +761,7 @@ function renderResult(data) {
         limitations.appendChild(li);
     }
 
+    if (saveAnalysisBtn) saveAnalysisBtn.disabled = !data.analysis_id;
     results.classList.remove("hidden");
 }
 
@@ -654,7 +786,10 @@ trainAgentBtn?.addEventListener("click", async () => {
             reason: "사용자가 실제 에이전트로 정정하여 학습 데이터에 반영했습니다.",
             learned_from_user_correction: true
         };
+        currentAgentAbilities = await fetchAgentKit(result.label);
+        currentAnalysis.agent_ability_catalog = currentAgentAbilities;
         renderAgent(currentAnalysis.agent_prediction);
+        renderEvents(currentAnalysis.events || []);
         const samples = result.model?.sample_count ?? 0;
         const labels = result.model?.label_count ?? 0;
         status.textContent = `학습 완료 · 에이전트 샘플 ${samples}개 / 라벨 ${labels}종`;
@@ -666,11 +801,28 @@ trainAgentBtn?.addEventListener("click", async () => {
     }
 });
 
+saveAnalysisBtn?.addEventListener("click", async () => {
+    if (!currentAnalysis) return;
+    saveAnalysisBtn.disabled = true;
+    saveAnalysisStatus.textContent = "저장 중...";
+    try {
+        const result = await saveAnalysisHistory(currentAnalysis, selectedFile?.name || "영상");
+        if (result.ok) {
+            saveAnalysisStatus.textContent = "내 분석에 저장되었습니다.";
+        } else {
+            saveAnalysisStatus.textContent = `저장 실패: ${result.detail}`;
+        }
+    } finally {
+        saveAnalysisBtn.disabled = false;
+    }
+});
+
 analyzeBtn.addEventListener("click", async () => {
     if (!selectedFile || analysisInProgress) return;
 
     setAnalysisInProgress(true);
     analyzeBtn.disabled = true;
+    resetSaveControls();
     statusBox.textContent = "영상 업로드 및 AI 분석 중... 다른 메뉴는 창으로 열리며 분석은 계속됩니다.";
 
     const form = new FormData();
@@ -696,16 +848,23 @@ analyzeBtn.addEventListener("click", async () => {
             throw new Error(detail || "분석 실패");
         }
 
-        statusBox.textContent = "Gemini 분석 완료 · 학습 모델로 에이전트/스킬 판별을 교차 확인하는 중...";
+        statusBox.textContent = "Gemini 분석 완료 · VALORANT UI 기준과 학습 모델로 요원/스킬 판별을 교차 확인하는 중...";
         await applyLearnedVisionPredictions(data);
         renderResult(data);
-        const historySaved = await saveAnalysisHistory(data, selectedFile?.name || "영상");
+        const historySave = await saveAnalysisHistory(data, selectedFile?.name || "영상");
         const baseStatus = data.usage && data.usage.premium
             ? `분석 완료 · ${data.model_used || "Gemini"} · ${data.analysis_fps || 1} FPS · PREMIUM`
             : `분석 완료 · ${data.model_used || "Gemini"} · ${data.analysis_fps || 1} FPS`;
-        statusBox.textContent = historySaved
-            ? `${baseStatus} · 기록 저장됨`
-            : baseStatus;
+
+        if (historySave.ok) {
+            statusBox.textContent = `${baseStatus} · 기록 저장됨`;
+            if (saveAnalysisStatus) saveAnalysisStatus.textContent = "자동 저장되었습니다.";
+        } else {
+            statusBox.textContent = `${baseStatus} · 자동 저장 실패`;
+            if (saveAnalysisStatus) {
+                saveAnalysisStatus.textContent = `자동 저장 실패: ${historySave.detail} · 저장 버튼으로 다시 시도할 수 있습니다.`;
+            }
+        }
     } catch (e) {
         statusBox.textContent = `오류: ${e.message}`;
     } finally {
@@ -740,8 +899,10 @@ document.getElementById("submitOverallFeedback").addEventListener("click", async
             categories: checked,
             comment: document.getElementById("overallComment").value.trim()
         });
-        msg.textContent = "피드백이 저장되었습니다.";
+        msg.textContent = "피드백이 저장되었습니다. 다음 분석부터 집계 보정에 반영됩니다.";
     } catch (e) {
         msg.textContent = `오류: ${e.message}`;
     }
 });
+
+populateAgentOptions();
