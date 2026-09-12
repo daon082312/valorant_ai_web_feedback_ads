@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}{% if mode == "signup" %}회원가입{% else %}로그인{% endif %} · VALORANT AI Coach{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+    <div class="auth-card">
+        <div class="eyebrow">VALORANT AI COACH</div>
+
+        {% if mode == "signup" %}
+        <h1 class="auth-title">회원가입</h1>
+        <p class="muted">
+            이메일 인증 후 이용할 수 있습니다. 무료 분석은 계정당 하루 3회이며,
+            동일 네트워크에도 별도 일일 한도가 적용됩니다.
+        </p>
+
+        {% if message %}<div class="auth-message">{{ message }}</div>{% endif %}
+        {% if error %}<div class="auth-error">{{ error }}</div>{% endif %}
+
+        <form class="auth-form" method="post" action="/auth/signup">
+            <label>
+                이메일
+                <input type="email" name="email" autocomplete="email" required>
+            </label>
+            <label>
+                비밀번호
+                <input type="password" name="password" autocomplete="new-password" minlength="8" required>
+            </label>
+            <button class="primary auth-submit" type="submit">가입하기</button>
+        </form>
+
+        <p class="auth-switch">이미 계정이 있나요? <a href="/login">로그인</a></p>
+
+        {% else %}
+        <h1 class="auth-title">로그인</h1>
+        <p class="muted">
+            로그인하면 브라우저가 달라도 같은 계정의 사용 횟수가 적용됩니다.
+        </p>
+
+        {% if message %}<div class="auth-message">{{ message }}</div>{% endif %}
+        {% if error %}<div class="auth-error">{{ error }}</div>{% endif %}
+
+        <form class="auth-form" method="post" action="/auth/login">
+            <label>
+                이메일
+                <input type="email" name="email" autocomplete="email" required>
+            </label>
+            <label>
+                비밀번호
+                <input type="password" name="password" autocomplete="current-password" required>
+            </label>
+            <button class="primary auth-submit" type="submit">로그인</button>
+        </form>
+
+        <p class="auth-switch">처음인가요? <a href="/signup">회원가입</a></p>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}
