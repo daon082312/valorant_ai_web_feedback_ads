@@ -1,71 +1,99 @@
 from __future__ import annotations
 
-import json
-import threading
+import hashlib
+import hmac
+import os
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-USAGE_FILE = DATA_DIR / "usage.json"
+from supabase import Client, create_client
 
-# The user is in Korea; daily allowance resets at Korean midnight.
+
 LOCAL_TZ = ZoneInfo("Asia/Seoul")
 
-_lock = threading.Lock()
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+
+SUPABASE_SECRET_KEY = (
+    os.getenv("SUPABASE_SECRET_KEY", "").strip()
+    or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+)
+
+USAGE_HASH_SECRET = (
+    os.getenv("USAGE_HASH_SECRET", "").strip()
+    or os.getenv("GEMINI_API_KEY", "").strip()
+)
+
+_client: Client | None = None
+
+
+class DailyLimitExceeded(Exception):
+    pass
+
+
+def usage_is_configured() -> bool:
+    return bool(
+        SUPABASE_URL
+        and SUPABASE_SECRET_KEY
+        and USAGE_HASH_SECRET
+    )
+
+
+def _get_client() -> Client:
+    global _client
+
+    if not usage_is_configured():
+        raise RuntimeError(
+            "Supabase usage database is not configured. "
+            "Set SUPABASE_URL, SUPABASE_SECRET_KEY, "
+            "and USAGE_HASH_SECRET."
+        )
+
+    if _client is None:
+        _client = create_client(
+            SUPABASE_URL,
+            SUPABASE_SECRET_KEY,
+        )
+
+    return _client
 
 
 def _today() -> str:
     return datetime.now(LOCAL_TZ).date().isoformat()
 
 
-def _load() -> dict:
-    if not USAGE_FILE.exists():
-        return {}
+def _user_key(ip: str) -> str:
+    normalized_ip = (ip or "unknown").strip()
 
-    try:
-        return json.loads(
-            USAGE_FILE.read_text(
-                encoding="utf-8"
-            )
-        )
-    except Exception:
-        return {}
-
-
-def _save(data: dict) -> None:
-    DATA_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    temp_file = USAGE_FILE.with_suffix(".tmp")
-    temp_file.write_text(
-        json.dumps(
-            data,
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-    temp_file.replace(USAGE_FILE)
+    return hmac.new(
+        USAGE_HASH_SECRET.encode("utf-8"),
+        normalized_ip.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def get_used(ip: str) -> int:
-    today = _today()
+    client = _get_client()
 
-    with _lock:
-        data = _load()
-        record = data.get(ip, {})
+    response = (
+        client.table("daily_usage")
+        .select("successful_analyses")
+        .eq("user_key", _user_key(ip))
+        .eq("usage_date", _today())
+        .limit(1)
+        .execute()
+    )
 
-        if record.get("date") != today:
-            return 0
+    rows = response.data or []
 
-        return int(
-            record.get("successful_analyses", 0)
+    if not rows:
+        return 0
+
+    return int(
+        rows[0].get(
+            "successful_analyses",
+            0,
         )
+    )
 
 
 def get_remaining(
@@ -73,39 +101,36 @@ def get_remaining(
     daily_limit: int,
 ) -> int:
     return max(
-        daily_limit - get_used(ip),
+        int(daily_limit) - get_used(ip),
         0,
     )
 
 
-def record_success(ip: str) -> int:
-    """
-    Increment only after a completed successful analysis.
+def record_success(
+    ip: str,
+    daily_limit: int,
+) -> int:
+    client = _get_client()
 
-    Returns today's new successful-analysis count.
-    """
-    today = _today()
+    response = client.rpc(
+        "consume_daily_usage",
+        {
+            "p_user_key": _user_key(ip),
+            "p_usage_date": _today(),
+            "p_daily_limit": int(daily_limit),
+        },
+    ).execute()
 
-    with _lock:
-        data = _load()
-        record = data.get(ip, {})
+    value = response.data
 
-        if record.get("date") != today:
-            count = 0
-        else:
-            count = int(
-                record.get(
-                    "successful_analyses",
-                    0,
-                )
-            )
+    if value is None:
+        raise RuntimeError(
+            "Supabase RPC returned no usage count."
+        )
 
-        count += 1
+    used = int(value)
 
-        data[ip] = {
-            "date": today,
-            "successful_analyses": count,
-        }
+    if used < 0:
+        raise DailyLimitExceeded()
 
-        _save(data)
-        return count
+    return used
