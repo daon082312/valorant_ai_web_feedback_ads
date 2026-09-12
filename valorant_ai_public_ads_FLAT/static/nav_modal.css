@@ -1,0 +1,124 @@
+.analysis-page-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 100000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(5, 7, 11, .78);
+    backdrop-filter: blur(8px);
+}
+
+.analysis-page-modal.open {
+    display: flex;
+}
+
+.analysis-page-modal-card {
+    width: min(1080px, 96vw);
+    height: min(820px, 88vh);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: #0b0e13;
+    box-shadow: 0 30px 100px rgba(0, 0, 0, .58);
+}
+
+.analysis-page-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--border);
+    background: #121720;
+}
+
+.analysis-page-modal-title {
+    min-width: 0;
+}
+
+.analysis-page-modal-title strong {
+    display: block;
+    font-size: 14px;
+}
+
+.analysis-page-modal-title span {
+    display: block;
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.analysis-page-modal-close {
+    flex: 0 0 auto;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #1c222d;
+    color: #fff;
+    font-size: 20px;
+    line-height: 1;
+}
+
+.analysis-page-modal-close:hover {
+    background: #303846;
+}
+
+.analysis-page-modal-frame {
+    width: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+    border: 0;
+    background: #0b0e13;
+}
+
+html.analysis-modal-open,
+body.analysis-modal-open {
+    overflow: hidden;
+}
+
+.history-new-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    text-decoration: none;
+    border: 1px solid var(--border);
+    background: #121720;
+    border-radius: 10px;
+    padding: 8px 11px;
+    font-size: 13px;
+    font-weight: 800;
+    white-space: nowrap;
+    transition: background .18s ease, border-color .18s ease, color .18s ease, transform .18s ease, box-shadow .18s ease;
+}
+
+.history-new-link:hover {
+    color: #fff;
+    background: #252d39;
+    border-color: #515d6f;
+    transform: translateY(-1px);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, .2);
+}
+
+.history-new-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+@media (max-width: 680px) {
+    .analysis-page-modal {
+        padding: 10px;
+    }
+
+    .analysis-page-modal-card {
+        width: 100%;
+        height: 92vh;
+        border-radius: 14px;
+    }
+}
