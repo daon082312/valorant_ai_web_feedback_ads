@@ -82,6 +82,24 @@ body.analysis-modal-open {
     overflow: hidden;
 }
 
+html.embedded-page,
+body.embedded-page-body {
+    background: #0b0e13;
+}
+
+body.embedded-page-body {
+    min-height: 100%;
+}
+
+.embedded-container {
+    width: min(var(--max), calc(100% - 28px));
+    padding: 20px 0 34px;
+}
+
+.embedded-container > :first-child {
+    margin-top: 0;
+}
+
 .history-new-link {
     display: inline-flex;
     align-items: center;
@@ -120,5 +138,10 @@ body.analysis-modal-open {
         width: 100%;
         height: 92vh;
         border-radius: 14px;
+    }
+
+    .embedded-container {
+        width: min(100% - 18px, var(--max));
+        padding-top: 12px;
     }
 }
