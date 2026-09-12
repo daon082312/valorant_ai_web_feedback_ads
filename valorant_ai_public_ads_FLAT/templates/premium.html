@@ -25,7 +25,8 @@
 
     <article class="premium-card premium-card-highlight">
         <div class="premium-plan-label">PREMIUM</div>
-        <h2>프리미엄</h2>
+        <h2>월 990원</h2>
+        <p class="muted">매월 990원으로 광고 없이 분석 횟수 제한 없이 이용할 수 있습니다.</p>
         <ul class="premium-features">
             <li>분석 횟수 무제한</li>
             <li>광고 완전 제거</li>
@@ -35,14 +36,15 @@
         {% if is_premium %}
         <div class="premium-active">현재 Premium 이용 중입니다.</div>
         {% elif current_user_email %}
-        <a class="premium-cta" href="mailto:{{ contact_email }}?subject=VALORANT%20AI%20Coach%20Premium%20문의">Premium 신청 문의</a>
+        <a class="premium-cta" href="mailto:{{ contact_email }}?subject=VALORANT%20AI%20Coach%20Premium%20990%EC%9B%90%20%EC%8B%A0%EC%B2%AD">월 990원 Premium 신청</a>
         {% else %}
-        <a class="premium-cta" href="/login">로그인 후 이용하기</a>
+        <a class="premium-cta" href="/login">로그인 후 월 990원 Premium 이용하기</a>
         {% endif %}
     </article>
 </section>
 
 <p class="premium-note muted">
-    현재는 운영자가 Premium 권한을 활성화하는 방식입니다. 결제 자동화는 추후 연결할 수 있습니다.
+    Premium 이용료는 월 990원입니다. 현재는 운영자가 결제 확인 후 Premium 권한을 활성화하는 방식이며,
+    자동 정기결제는 아직 연결되어 있지 않습니다.
 </p>
 {% endblock %}
