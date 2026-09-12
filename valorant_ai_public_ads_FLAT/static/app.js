@@ -272,8 +272,8 @@ function renderEvents(events) {
         ts.className = "timestamp";
         ts.textContent = event.timestamp;
         ts.onclick = () => {
+            videoPlayer.pause();
             videoPlayer.currentTime = timestampToSeconds(event.timestamp);
-            videoPlayer.play();
             videoPlayer.scrollIntoView({behavior: "smooth", block: "center"});
         };
 
