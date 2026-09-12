@@ -38,7 +38,7 @@ class TierPrediction(BaseModel):
     ]
     confidence: float = Field(ge=0, le=1)
     reason: str = Field(
-        description="반드시 자연스러운 한국어로만 작성하는 짧은 티어 예측 근거. 게임 고유명사만 영문 허용"
+        description="반드시 자연스러운 한국어로 작성하는 티어 예측 근거 2~3문장. 관찰된 강점과 약점을 함께 설명"
     )
 
 
@@ -55,10 +55,10 @@ class Event(BaseModel):
     ]
     severity: Literal["positive", "low", "medium", "high"]
     observation: str = Field(
-        description="영상에서 직접 관찰한 사실을 자연스러운 한국어 한 문장으로 작성"
+        description="영상에서 직접 관찰한 사실을 자연스러운 한국어 1~2문장으로 구체적으로 작성"
     )
     feedback: str = Field(
-        description="해당 장면에 대한 코칭을 자연스러운 한국어 한 문장으로 작성"
+        description="해당 장면의 문제 또는 강점, 이유, 개선 방법을 자연스러운 한국어 2~3문장으로 작성"
     )
     confidence: float = Field(ge=0, le=1)
 
@@ -66,16 +66,16 @@ class Event(BaseModel):
 class ValorantAnalysis(BaseModel):
     overall_score: int = Field(ge=0, le=100)
     summary: str = Field(
-        description="전체 분석 요약을 자연스러운 한국어 최대 두 문장으로 작성"
+        description="전체 플레이 경향, 강점, 약점, 가장 중요한 개선 방향을 포함한 자연스러운 한국어 4~6문장 요약"
     )
     tier_prediction: TierPrediction
     scores: ScoreSet
     events: list[Event]
     top_priorities: list[str] = Field(
-        description="가장 먼저 개선할 점 최대 2개를 각각 짧은 한국어 문장으로 작성",
+        description="가장 먼저 개선할 점 최대 4개. 각각 무엇을, 왜, 어떻게 개선할지 포함한 한국어 문장으로 작성",
     )
     limitations: list[str] = Field(
-        description="분석 한계 최대 2개를 각각 짧은 한국어 문장으로 작성",
+        description="분석 한계 최대 3개를 한국어로 작성",
     )
 
 
@@ -95,18 +95,23 @@ PROMPT = """
 - Aim, Movement, Positioning, Utility, Decision Making, Teamplay를 평가합니다.
 - 영상으로 정확히 측정할 수 없는 reaction time(ms), DPI, frame-perfect timing을 주장하지 않습니다.
 - overall_score와 영역별 점수는 0~100입니다.
-- 중요한 장면만 최대 3개 반환하고 비슷한 장면은 합칩니다.
-- top_priorities는 최대 2개, limitations는 최대 2개입니다.
-- summary는 최대 2문장, observation과 feedback은 각각 한 문장으로 짧고 구체적으로 작성합니다.
+- 중요한 장면을 최대 6개 반환합니다. 서로 다른 실수·강점·교전 선택을 우선하고, 완전히 비슷한 장면만 합칩니다.
+- top_priorities는 최대 4개, limitations는 최대 3개입니다.
+- summary는 4~6문장으로 작성하며, 전체 플레이 스타일, 잘한 점, 반복되는 문제, 가장 중요한 개선 방향을 모두 포함합니다.
+- 각 event의 observation은 1~2문장으로 실제 화면에서 본 사실을 구체적으로 설명합니다.
+- 각 event의 feedback은 2~3문장으로 작성하며, 단순히 '잘했다/아쉽다'로 끝내지 말고 왜 그런지와 다음에 무엇을 해야 하는지를 설명합니다.
 - 한 번의 킬이나 실수만으로 습관을 단정하지 않습니다.
 - 킬 성공 여부보다 크로스헤어 위치, 노출 각도, 커버, 이동, 유틸리티, 교전 선택을 우선 평가합니다.
+- 좋은 플레이도 최소 1개 이상 찾을 수 있으면 포함해서 사용자가 유지해야 할 습관을 알려줍니다.
+- 영상에서 반복되는 패턴이 보이면 서로 다른 시점의 근거를 연결해서 설명합니다.
+- 내용 없는 반복, 뻔한 문구, 불필요한 장황함은 피하고 실제 코칭에 도움이 되는 정보 밀도를 높입니다.
 
 티어 예측:
 - 실제 랭크/MMR이 아니라 이 클립에서 관찰되는 플레이 수준의 추정치입니다.
 - 가능한 티어: Iron, Bronze, Silver, Gold, Platinum, Diamond, Ascendant, Immortal, Radiant.
 - Aim만 보지 말고 Movement, Positioning, Utility, Decision Making과 일관성을 함께 봅니다.
 - 짧거나 근거가 부족한 클립은 confidence를 낮게 주며, 근거가 매우 적으면 0.45 이하로 둡니다.
-- reason은 한국어 한 문장으로 핵심 근거만 작성합니다.
+- reason은 한국어 2~3문장으로 작성하며, 티어를 높게 본 근거와 낮게 본 근거를 모두 포함합니다.
 - 실제 랭크와 다를 수 있음을 limitations에 포함합니다.
 """
 
@@ -256,9 +261,9 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                     .model_dump()
                 )
 
-                result["events"] = list(result.get("events") or [])[:3]
-                result["top_priorities"] = list(result.get("top_priorities") or [])[:2]
-                result["limitations"] = list(result.get("limitations") or [])[:2]
+                result["events"] = list(result.get("events") or [])[:6]
+                result["top_priorities"] = list(result.get("top_priorities") or [])[:4]
+                result["limitations"] = list(result.get("limitations") or [])[:3]
                 result["model_used"] = model
                 result["analysis_fps"] = 1
                 result["media_resolution"] = "default"
