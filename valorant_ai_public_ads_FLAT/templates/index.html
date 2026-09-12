@@ -51,6 +51,23 @@
         <p id="summary" class="summary"></p>
     </div>
 
+    <section class="panel tier-panel">
+        <div class="eyebrow">CLIP-BASED TIER PREDICTION</div>
+        <div class="tier-layout">
+            <div>
+                <div class="muted tier-label">예상 티어</div>
+                <div id="tierBadge" class="tier-badge">--</div>
+            </div>
+            <div class="tier-details">
+                <div id="tierConfidence" class="tier-confidence">신뢰도 --%</div>
+                <p id="tierReason" class="tier-reason"></p>
+            </div>
+        </div>
+        <p class="tier-disclaimer">
+            한 클립의 플레이만 보고 추정한 값입니다. 실제 경쟁전 랭크나 MMR과 다를 수 있습니다.
+        </p>
+    </section>
+
     <section class="panel">
         <h2>영역별 점수</h2>
         <div id="scoreBars"></div>
