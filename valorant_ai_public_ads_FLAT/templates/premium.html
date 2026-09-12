@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}Premium · VALORANT AI Coach{% endblock %}
+
+{% block content %}
+<section class="premium-hero">
+    <div class="eyebrow">VALORANT AI COACH PREMIUM</div>
+    <h1>광고 없이,<br>분석 횟수 제한 없이.</h1>
+    <p class="subtitle">
+        Premium 계정은 광고가 표시되지 않고 광고 차단 검사도 적용되지 않으며,
+        일일 분석 횟수 제한 없이 클립을 분석할 수 있습니다.
+    </p>
+</section>
+
+<section class="premium-grid">
+    <article class="premium-card">
+        <div class="premium-plan-label">FREE</div>
+        <h2>무료</h2>
+        <ul class="premium-features">
+            <li>계정당 하루 3회 분석</li>
+            <li>동일 네트워크 하루 6회 제한</li>
+            <li>광고 표시</li>
+        </ul>
+    </article>
+
+    <article class="premium-card premium-card-highlight">
+        <div class="premium-plan-label">PREMIUM</div>
+        <h2>프리미엄</h2>
+        <ul class="premium-features">
+            <li>분석 횟수 무제한</li>
+            <li>광고 완전 제거</li>
+            <li>광고 차단 검사 제외</li>
+        </ul>
+
+        {% if is_premium %}
+        <div class="premium-active">현재 Premium 이용 중입니다.</div>
+        {% elif current_user_email %}
+        <a class="premium-cta" href="mailto:{{ contact_email }}?subject=VALORANT%20AI%20Coach%20Premium%20문의">Premium 신청 문의</a>
+        {% else %}
+        <a class="premium-cta" href="/login">로그인 후 이용하기</a>
+        {% endif %}
+    </article>
+</section>
+
+<p class="premium-note muted">
+    현재는 운영자가 Premium 권한을 활성화하는 방식입니다. 결제 자동화는 추후 연결할 수 있습니다.
+</p>
+{% endblock %}
