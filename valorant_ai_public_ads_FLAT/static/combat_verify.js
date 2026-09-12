@@ -65,7 +65,10 @@
             for (let index = 0; index < Math.min(events.length, 6); index += 1) {
                 const event = events[index];
                 const center = timestampToSeconds(event.timestamp);
-                const offsets = [-0.38, 0.08, 0.58];
+                // Main video timestamps come from ~1 FPS sampling and can be off
+                // by close to a second. Use a wider window so killfeed/death UI
+                // has time to appear in at least one verification frame.
+                const offsets = [-0.45, 0.30, 1.10];
                 const frames = [];
 
                 for (const offset of offsets) {
@@ -107,6 +110,7 @@
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({
                 analysis_id: data.analysis_id,
+                summary: String(data.summary || ""),
                 events: payloadEvents
             })
         });
@@ -133,15 +137,21 @@
             event.combat_evidence = String(item.evidence || "");
             event.combat_verified = true;
 
-            // Replace the main model's wording only when the frame verifier is
-            // reasonably confident that the original kill/death interpretation
-            // was wrong or omitted a clearly visible result.
             if (item.replace_text && confidence >= 0.62) {
                 const correctedObservation = String(item.corrected_observation || "").trim();
                 const correctedFeedback = String(item.corrected_feedback || "").trim();
                 if (correctedObservation) event.observation = correctedObservation;
                 if (correctedFeedback) event.feedback = correctedFeedback;
                 event.combat_text_corrected = true;
+            }
+        }
+
+        if (verification?.replace_summary) {
+            const correctedSummary = String(verification.corrected_summary || "").trim();
+            if (correctedSummary) {
+                data.original_summary_before_combat_verification = data.summary;
+                data.summary = correctedSummary;
+                data.combat_summary_corrected = true;
             }
         }
 
