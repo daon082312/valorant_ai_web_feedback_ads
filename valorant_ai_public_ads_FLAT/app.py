@@ -98,32 +98,47 @@ def classify_analysis_error(exc: Exception) -> tuple[int, str, str]:
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse("index.html", common_context(request))
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context=common_context(request),
+    )
 
 
 @app.get("/about", response_class=HTMLResponse)
 async def about(request: Request):
-    return templates.TemplateResponse("about.html", common_context(request))
+    return templates.TemplateResponse(
+        request=request,
+        name="about.html",
+        context=common_context(request),
+    )
 
 
 @app.get("/privacy", response_class=HTMLResponse)
 async def privacy(request: Request):
-    return templates.TemplateResponse("privacy.html", common_context(request))
+    return templates.TemplateResponse(
+        request=request,
+        name="privacy.html",
+        context=common_context(request),
+    )
 
 
 @app.get("/terms", response_class=HTMLResponse)
 async def terms(request: Request):
-    return templates.TemplateResponse("terms.html", common_context(request))
+    return templates.TemplateResponse(
+        request=request,
+        name="terms.html",
+        context=common_context(request),
+    )
 
 
 @app.get("/guide", response_class=HTMLResponse)
 async def guide(request: Request):
-    return templates.TemplateResponse("guide.html", common_context(request))
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+    return templates.TemplateResponse(
+        request=request,
+        name="guide.html",
+        context=common_context(request),
+    )
 
 
 @app.get("/usage")
