@@ -175,11 +175,11 @@ async function sendFeedback(payload) {
 
 function renderScores(scores) {
     const labels = {
-        aim: "Aim",
-        movement: "Movement",
-        positioning: "Positioning",
-        utility: "Utility",
-        decision_making: "Decision Making"
+        aim: "조준 (Aim)",
+        movement: "움직임 (Movement)",
+        positioning: "포지셔닝",
+        utility: "스킬 활용",
+        decision_making: "판단력"
     };
     const root = document.getElementById("scoreBars");
     root.innerHTML = "";
@@ -236,7 +236,7 @@ function renderTier(prediction) {
     const confidence = Math.max(0, Math.min(100, Math.round((prediction.confidence ?? 0) * 100)));
 
     tierBadge.className = `tier-badge ${tierClass}`;
-    tierBadge.textContent = `${labels[tier] || tier} · ${tier}`;
+    tierBadge.textContent = labels[tier] || tier;
     tierConfidence.textContent = `신뢰도 ${confidence}%`;
     tierReason.textContent = prediction.reason || "클립에서 관찰된 플레이를 종합해 추정했습니다.";
 }
@@ -244,6 +244,22 @@ function renderTier(prediction) {
 function renderEvents(events) {
     const root = document.getElementById("events");
     root.innerHTML = "";
+
+    const categoryLabels = {
+        aim: "조준",
+        movement: "움직임",
+        positioning: "포지셔닝",
+        utility: "스킬 활용",
+        decision_making: "판단력",
+        teamplay: "팀플레이",
+        other: "기타"
+    };
+    const severityLabels = {
+        positive: "잘한 점",
+        low: "낮은 중요도",
+        medium: "중간 중요도",
+        high: "높은 중요도"
+    };
 
     events.forEach((event, index) => {
         const box = document.createElement("div");
@@ -262,7 +278,11 @@ function renderEvents(events) {
         };
 
         head.appendChild(ts);
-        for (const value of [event.category, event.severity, `confidence ${Math.round(event.confidence * 100)}%`]) {
+        for (const value of [
+            categoryLabels[event.category] || event.category,
+            severityLabels[event.severity] || event.severity,
+            `신뢰도 ${Math.round(event.confidence * 100)}%`
+        ]) {
             const badge = document.createElement("span");
             badge.className = "badge";
             badge.textContent = value;
@@ -418,5 +438,3 @@ document.getElementById("submitOverallFeedback").addEventListener("click", async
         msg.textContent = `오류: ${e.message}`;
     }
 });
-
-refreshUsage();
