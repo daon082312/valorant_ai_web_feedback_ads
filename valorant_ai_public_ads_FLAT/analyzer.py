@@ -42,6 +42,16 @@ class TierPrediction(BaseModel):
     )
 
 
+class AgentPrediction(BaseModel):
+    agent: str = Field(
+        description="영상의 HUD, 스킬 아이콘, 손/장비, 스킬 효과를 종합해 판단한 플레이어 에이전트 영문 이름. 확신할 수 없으면 Unknown"
+    )
+    confidence: float = Field(ge=0, le=1)
+    reason: str = Field(
+        description="에이전트를 그렇게 판단한 시각적 근거를 한국어 1~2문장으로 작성"
+    )
+
+
 class Event(BaseModel):
     timestamp: str
     category: Literal[
@@ -60,6 +70,16 @@ class Event(BaseModel):
     feedback: str = Field(
         description="해당 장면의 문제 또는 강점, 이유, 개선 방법을 자연스러운 한국어 2~3문장으로 작성"
     )
+    ability_name: str | None = Field(
+        default=None,
+        description="이 장면에서 플레이어가 사용한 스킬의 공식 영문 이름. 사용하지 않았거나 확신할 수 없으면 null",
+    )
+    ability_confidence: float = Field(
+        default=0.0,
+        ge=0,
+        le=1,
+        description="ability_name 판별 신뢰도. 스킬을 판별하지 못하면 0",
+    )
     confidence: float = Field(ge=0, le=1)
 
 
@@ -68,6 +88,7 @@ class ValorantAnalysis(BaseModel):
     summary: str = Field(
         description="전체 플레이 경향, 강점, 약점, 가장 중요한 개선 방향을 포함한 자연스러운 한국어 4~6문장 요약"
     )
+    agent_prediction: AgentPrediction
     tier_prediction: TierPrediction
     scores: ScoreSet
     events: list[Event]
@@ -84,9 +105,19 @@ PROMPT = """
 
 출력 언어 규칙:
 - 사용자가 읽는 모든 자연어 문장은 반드시 한국어로 작성합니다.
-- summary, tier_prediction.reason, events[].observation, events[].feedback,
+- summary, agent_prediction.reason, tier_prediction.reason, events[].observation, events[].feedback,
   top_priorities, limitations를 모두 한국어로 작성합니다.
-- JSON 키와 enum 값만 스키마에 정의된 영문 값을 사용합니다.
+- 에이전트 이름과 스킬 공식 이름은 게임에서 사용하는 영문 표기를 사용해도 됩니다.
+- JSON 키와 enum 값은 스키마에 정의된 값을 사용합니다.
+
+에이전트/스킬 인식 규칙:
+- 분석을 시작할 때 HUD 하단의 스킬 아이콘, 손/장비, 스킬 사용 애니메이션과 화면 효과를 종합하여 플레이어의 에이전트를 먼저 판단합니다.
+- 한 가지 시각 단서만으로 에이전트를 확정하지 말고 서로 독립적인 단서를 가능하면 2개 이상 확인합니다.
+- 에이전트가 확정되면 해당 에이전트가 실제로 보유한 스킬만 스킬 후보로 사용합니다. 다른 에이전트의 스킬 이름을 섞지 마세요.
+- 각 주요 장면에서 실제로 스킬 사용이 관찰되면 ability_name에 그 스킬의 공식 영문 이름을 기록하고 ability_confidence를 제공합니다.
+- 단순 총격, 이동, 무기 교체를 스킬 사용으로 오인하지 마세요.
+- 스킬 아이콘이나 효과가 불명확하면 ability_name은 null, ability_confidence는 낮게 둡니다.
+- agent_prediction도 확신할 수 없으면 agent를 Unknown으로 하고 confidence를 낮게 둡니다.
 
 분석 규칙:
 - 영상에서 직접 확인 가능한 내용만 말하고 보이지 않는 정보는 추측하지 않습니다.
@@ -195,11 +226,26 @@ def _daily_quota(text: str) -> bool:
     )
 
 
-def _build_prompt(calibration: dict) -> str:
+def _build_prompt(calibration: dict, vision_hint: dict | None = None) -> str:
+    parts = [PROMPT]
+
     calibration_prompt = str(calibration.get("prompt") or "").strip()
-    if not calibration_prompt:
-        return PROMPT
-    return f"{PROMPT}\n\n{calibration_prompt[:2200]}"
+    if calibration_prompt:
+        parts.append(calibration_prompt[:2200])
+
+    if vision_hint and vision_hint.get("label"):
+        confidence = float(vision_hint.get("confidence") or 0)
+        sample_count = int(vision_hint.get("sample_count") or 0)
+        if confidence >= 0.45 and sample_count >= 2:
+            parts.append(
+                "사이트의 별도 학습형 이미지 분류기가 HUD 프레임을 기반으로 "
+                f"플레이어 에이전트를 '{vision_hint['label']}'로 예측했습니다 "
+                f"(학습 샘플 {sample_count}개, 내부 신뢰도 {confidence:.2f}). "
+                "이 값은 사용자의 정정 데이터로 실제 학습된 보조 모델의 힌트일 뿐 정답으로 강제하지 마세요. "
+                "영상의 HUD/스킬 아이콘/효과와 일치할 때만 채택하고, 불일치하면 영상 근거를 우선하세요."
+            )
+
+    return "\n\n".join(parts)
 
 
 def _safe_failure_detail(errors_seen: list[str]) -> tuple[int, str]:
@@ -222,9 +268,9 @@ def _safe_failure_detail(errors_seen: list[str]) -> tuple[int, str]:
     return 503, "Gemini 영상 분석 단계에서 오류가 발생했습니다. Render 로그에서 '[Gemini]'로 시작하는 줄을 확인해 주세요."
 
 
-def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
+def _generate(client: genai.Client, uploaded, calibration: dict, vision_hint: dict | None = None) -> dict:
     errors_seen: list[str] = []
-    prompt = _build_prompt(calibration)
+    prompt = _build_prompt(calibration, vision_hint)
 
     for model in _models():
         print(
@@ -268,6 +314,13 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                 result["analysis_fps"] = 1
                 result["media_resolution"] = "default"
                 result["economy_mode"] = True
+                result["vision_learning_hint_used"] = bool(
+                    vision_hint
+                    and vision_hint.get("label")
+                    and float(vision_hint.get("confidence") or 0) >= 0.45
+                    and int(vision_hint.get("sample_count") or 0) >= 2
+                )
+                result["vision_learning_hint"] = vision_hint or {}
                 result["feedback_calibration_used"] = bool(calibration.get("prompt"))
                 result["feedback_calibration_samples"] = int(
                     calibration.get("sample_size") or 0
@@ -311,7 +364,7 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
     raise HTTPException(status_code=status_code, detail=detail)
 
 
-def analyze_video(video_path: Path) -> dict:
+def analyze_video(video_path: Path, vision_hint: dict | None = None) -> dict:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise HTTPException(
@@ -342,7 +395,7 @@ def analyze_video(video_path: Path) -> dict:
                 detail="Gemini에 영상을 업로드하거나 처리하는 단계에서 오류가 발생했습니다.",
             ) from exc
 
-        return _generate(client, uploaded, calibration)
+        return _generate(client, uploaded, calibration, vision_hint)
 
     finally:
         if uploaded is not None:
