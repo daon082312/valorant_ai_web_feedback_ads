@@ -78,7 +78,7 @@ PROMPT = """
 - 가능한 경우 MM:SS timestamp를 사용합니다.
 - Aim, Movement, Positioning, Utility, Decision Making, Teamplay를 평가합니다.
 - reaction time(ms), DPI 등 영상만으로 정확히 알 수 없는 수치를 추측하지 않습니다.
-- 중요한 장면은 최대 4개만 고릅니다. 중복 장면보다 서로 다른 강점·실수·판단을 우선합니다.
+- 중요한 장면은 최대 6개까지 고릅니다. 중복 장면보다 서로 다른 강점·실수·판단을 우선합니다.
 - summary는 3~4문장, event observation은 1문장, feedback은 1~2문장으로 간결하게 작성합니다.
 - top_priorities는 최대 3개, limitations는 최대 2개입니다.
 - 좋은 플레이도 근거가 있으면 최소 1개 포함합니다.
@@ -272,7 +272,7 @@ def _generate(client: genai.Client, uploaded, calibration: dict, vision_hint: di
                         response_mime_type="application/json",
                         response_schema=ValorantAnalysis,
                         temperature=0.10,
-                        max_output_tokens=1800,
+                        max_output_tokens=2200,
                         media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW,
                         thinking_config=types.ThinkingConfig(thinking_level="minimal"),
                         automatic_function_calling=types.AutomaticFunctionCallingConfig(
@@ -293,7 +293,7 @@ def _generate(client: genai.Client, uploaded, calibration: dict, vision_hint: di
                     )
 
                 result = ValorantAnalysis.model_validate_json(response.text).model_dump()
-                result["events"] = list(result.get("events") or [])[:4]
+                result["events"] = list(result.get("events") or [])[:6]
                 result["top_priorities"] = list(result.get("top_priorities") or [])[:3]
                 result["limitations"] = list(result.get("limitations") or [])[:2]
                 result["model_used"] = model
