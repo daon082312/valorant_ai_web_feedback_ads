@@ -145,6 +145,27 @@ def _models() -> list[str]:
     return ordered
 
 
+def _empty_calibration() -> dict:
+    return {
+        "sample_size": 0,
+        "source": "disabled_after_error",
+        "overall_count": 0,
+        "overall": {},
+        "categories": {},
+        "prompt": "",
+    }
+
+
+def _safe_feedback_calibration() -> dict:
+    """Feedback improves later analyses, but must never break an analysis."""
+    try:
+        value = get_feedback_calibration()
+        return value if isinstance(value, dict) else _empty_calibration()
+    except Exception as exc:
+        print(f"[Feedback] calibration skipped because of error: {type(exc).__name__}: {exc}")
+        return _empty_calibration()
+
+
 def _wait_for_file(client: genai.Client, uploaded):
     for _ in range(120):
         current = client.files.get(name=uploaded.name)
@@ -188,10 +209,6 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
 
         for attempt in range(1, 3):
             try:
-                # Keep the video request deliberately simple for Gemini 2.5.
-                # File API already processes video at its native/default sampling,
-                # so do not attach Gemini-3-only media_resolution or custom
-                # VideoMetadata settings here.
                 response = client.models.generate_content(
                     model=model,
                     contents=[uploaded, prompt],
@@ -204,7 +221,15 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                 )
 
                 if not response.text:
-                    raise RuntimeError(f"{model} 빈 응답")
+                    finish_reason = ""
+                    try:
+                        finish_reason = str(response.candidates[0].finish_reason)
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        f"{model} 빈 응답"
+                        + (f" (finish_reason={finish_reason})" if finish_reason else "")
+                    )
 
                 result = (
                     ValorantAnalysis
@@ -220,9 +245,7 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                 result["analysis_fps"] = 1
                 result["media_resolution"] = "default"
                 result["economy_mode"] = True
-                result["feedback_calibration_used"] = bool(
-                    calibration.get("prompt")
-                )
+                result["feedback_calibration_used"] = bool(calibration.get("prompt"))
                 result["feedback_calibration_samples"] = int(
                     calibration.get("sample_size") or 0
                 )
@@ -254,18 +277,11 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                         continue
                     break
 
-                if (
-                    "404" in text
-                    or "NOT_FOUND" in text
-                    or "not found" in text.lower()
-                ):
-                    break
-
                 break
 
             except (ValueError, RuntimeError) as exc:
-                errors_seen.append(f"{model}: {exc}")
-                print(f"[Gemini] 응답 검증 오류: {exc}")
+                errors_seen.append(f"{model}: {type(exc).__name__}: {exc}")
+                print(f"[Gemini] 응답 검증 오류: {type(exc).__name__}: {exc}")
                 break
 
     details = "\n\n".join(errors_seen[-2:])
@@ -284,7 +300,7 @@ def analyze_video(video_path: Path) -> dict:
     uploaded = None
 
     try:
-        calibration = get_feedback_calibration()
+        calibration = _safe_feedback_calibration()
         uploaded = client.files.upload(file=video_path)
         uploaded = _wait_for_file(client, uploaded)
         return _generate(client, uploaded, calibration)
