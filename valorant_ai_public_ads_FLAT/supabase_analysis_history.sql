@@ -1,5 +1,5 @@
 create table if not exists public.analysis_history (
-    analysis_id text primary key,
+    analysis_id text not null,
     user_id uuid not null references auth.users(id) on delete cascade,
     created_at timestamptz not null default now(),
     file_name text not null default '영상',
@@ -7,8 +7,12 @@ create table if not exists public.analysis_history (
     tier text not null default '',
     summary text not null default '',
     model_used text not null default '',
-    result jsonb not null
+    result jsonb not null,
+    primary key (user_id, analysis_id)
 );
+
+create unique index if not exists analysis_history_user_analysis_uidx
+    on public.analysis_history (user_id, analysis_id);
 
 create index if not exists analysis_history_user_created_idx
     on public.analysis_history (user_id, created_at desc);
