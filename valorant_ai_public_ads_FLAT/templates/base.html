@@ -1,4 +1,4 @@
-{% set embedded = request.query_params.get('embedded') == '1' %}
+{% set embedded = request.query_params.get('embedded') == '1' or request.headers.get('sec-fetch-dest') == 'iframe' %}
 <!doctype html>
 <html lang="ko"{% if embedded %} class="embedded-page"{% endif %}>
 <head>
