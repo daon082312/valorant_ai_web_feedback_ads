@@ -26,129 +26,81 @@ class ScoreSet(BaseModel):
 
 class TierPrediction(BaseModel):
     tier: Literal[
-        "Iron",
-        "Bronze",
-        "Silver",
-        "Gold",
-        "Platinum",
-        "Diamond",
-        "Ascendant",
-        "Immortal",
-        "Radiant",
+        "Iron", "Bronze", "Silver", "Gold", "Platinum",
+        "Diamond", "Ascendant", "Immortal", "Radiant",
     ]
     confidence: float = Field(ge=0, le=1)
-    reason: str = Field(
-        description="반드시 자연스러운 한국어로 작성하는 티어 예측 근거 2~3문장. 관찰된 강점과 약점을 함께 설명"
-    )
+    reason: str = Field(description="티어 예측 근거를 자연스러운 한국어 1~2문장으로 간결하게 작성")
 
 
 class AgentPrediction(BaseModel):
     agent: str = Field(
-        description="영상의 HUD, 스킬 아이콘, 손/장비, 스킬 효과를 종합해 판단한 플레이어 에이전트 영문 이름. 확신할 수 없으면 Unknown"
+        description="HUD와 스킬 단서를 종합해 판단한 플레이어 에이전트 영문 이름. 확신할 수 없으면 Unknown"
     )
     confidence: float = Field(ge=0, le=1)
-    reason: str = Field(
-        description="에이전트를 그렇게 판단한 시각적 근거를 한국어 1~2문장으로 작성"
-    )
+    reason: str = Field(description="에이전트 판별의 핵심 시각 근거를 한국어 한 문장으로 작성")
 
 
 class Event(BaseModel):
     timestamp: str
     category: Literal[
-        "aim",
-        "movement",
-        "positioning",
-        "utility",
-        "decision_making",
-        "teamplay",
-        "other",
+        "aim", "movement", "positioning", "utility",
+        "decision_making", "teamplay", "other",
     ]
     severity: Literal["positive", "low", "medium", "high"]
-    observation: str = Field(
-        description="영상에서 직접 관찰한 사실을 자연스러운 한국어 1~2문장으로 구체적으로 작성"
-    )
-    feedback: str = Field(
-        description="해당 장면의 문제 또는 강점, 이유, 개선 방법을 자연스러운 한국어 2~3문장으로 작성"
-    )
+    observation: str = Field(description="화면에서 직접 관찰한 사실을 한국어 한 문장으로 작성")
+    feedback: str = Field(description="문제 또는 강점과 개선 방법을 한국어 1~2문장으로 작성")
     ability_name: str | None = Field(
         default=None,
-        description="이 장면에서 플레이어가 사용한 스킬의 공식 영문 이름. 사용하지 않았거나 확신할 수 없으면 null",
+        description="이 장면에서 플레이어가 명확히 사용한 스킬의 공식 영문 이름. 없거나 불확실하면 null",
     )
-    ability_confidence: float = Field(
-        default=0.0,
-        ge=0,
-        le=1,
-        description="ability_name 판별 신뢰도. 스킬을 판별하지 못하면 0",
-    )
+    ability_confidence: float = Field(default=0.0, ge=0, le=1)
     confidence: float = Field(ge=0, le=1)
 
 
 class ValorantAnalysis(BaseModel):
     overall_score: int = Field(ge=0, le=100)
-    summary: str = Field(
-        description="전체 플레이 경향, 강점, 약점, 가장 중요한 개선 방향을 포함한 자연스러운 한국어 4~6문장 요약"
-    )
+    summary: str = Field(description="강점, 약점, 핵심 개선 방향을 포함한 자연스러운 한국어 3~4문장 요약")
     agent_prediction: AgentPrediction
     tier_prediction: TierPrediction
     scores: ScoreSet
     events: list[Event]
-    top_priorities: list[str] = Field(
-        description="가장 먼저 개선할 점 최대 4개. 각각 무엇을, 왜, 어떻게 개선할지 포함한 한국어 문장으로 작성",
-    )
-    limitations: list[str] = Field(
-        description="분석 한계 최대 3개를 한국어로 작성",
-    )
+    top_priorities: list[str] = Field(description="가장 먼저 개선할 점 최대 3개를 간결한 한국어 문장으로 작성")
+    limitations: list[str] = Field(description="분석 한계 최대 2개를 한국어로 작성")
 
 
 PROMPT = """
 당신은 한국어로 답변하는 VALORANT 경기 후 코칭 전문가입니다. 첨부된 클립 전체를 시간 순서대로 분석하세요.
 
-출력 언어 규칙:
-- 사용자가 읽는 모든 자연어 문장은 반드시 한국어로 작성합니다.
-- summary, agent_prediction.reason, tier_prediction.reason, events[].observation, events[].feedback,
-  top_priorities, limitations를 모두 한국어로 작성합니다.
-- 에이전트 이름과 스킬 공식 이름은 게임에서 사용하는 영문 표기를 사용해도 됩니다.
-- JSON 키와 enum 값은 스키마에 정의된 값을 사용합니다.
-
-에이전트/스킬 인식 규칙:
-- 분석을 시작할 때 HUD 하단의 스킬 아이콘, 손/장비, 스킬 사용 애니메이션과 화면 효과를 종합하여 플레이어의 에이전트를 먼저 판단합니다.
-- 한 가지 시각 단서만으로 에이전트를 확정하지 말고 서로 독립적인 단서를 가능하면 2개 이상 확인합니다.
-- 에이전트가 확정되면 해당 에이전트가 실제로 보유한 스킬만 스킬 후보로 사용합니다. 다른 에이전트의 스킬 이름을 섞지 마세요.
-- 각 주요 장면에서 실제로 스킬 사용이 관찰되면 ability_name에 그 스킬의 공식 영문 이름을 기록하고 ability_confidence를 제공합니다.
-- 단순 총격, 이동, 무기 교체를 스킬 사용으로 오인하지 마세요.
-- 스킬 아이콘이나 효과가 불명확하면 ability_name은 null, ability_confidence는 낮게 둡니다.
-- agent_prediction도 확신할 수 없으면 agent를 Unknown으로 하고 confidence를 낮게 둡니다.
-
-분석 규칙:
-- 영상에서 직접 확인 가능한 내용만 말하고 보이지 않는 정보는 추측하지 않습니다.
-- 불확실하면 confidence를 낮춥니다.
+핵심 규칙:
+- 사용자가 읽는 모든 자연어는 한국어로 작성합니다. JSON 키와 enum 값은 스키마를 따릅니다.
+- 영상에서 직접 확인 가능한 내용만 말하고, 불확실하면 confidence를 낮춥니다.
 - 가능한 경우 MM:SS timestamp를 사용합니다.
 - Aim, Movement, Positioning, Utility, Decision Making, Teamplay를 평가합니다.
-- 영상으로 정확히 측정할 수 없는 reaction time(ms), DPI, frame-perfect timing을 주장하지 않습니다.
-- overall_score와 영역별 점수는 0~100입니다.
-- 중요한 장면을 최대 6개 반환합니다. 서로 다른 실수·강점·교전 선택을 우선하고, 완전히 비슷한 장면만 합칩니다.
-- top_priorities는 최대 4개, limitations는 최대 3개입니다.
-- summary는 4~6문장으로 작성하며, 전체 플레이 스타일, 잘한 점, 반복되는 문제, 가장 중요한 개선 방향을 모두 포함합니다.
-- 각 event의 observation은 1~2문장으로 실제 화면에서 본 사실을 구체적으로 설명합니다.
-- 각 event의 feedback은 2~3문장으로 작성하며, 단순히 '잘했다/아쉽다'로 끝내지 말고 왜 그런지와 다음에 무엇을 해야 하는지를 설명합니다.
-- 한 번의 킬이나 실수만으로 습관을 단정하지 않습니다.
-- 킬 성공 여부보다 크로스헤어 위치, 노출 각도, 커버, 이동, 유틸리티, 교전 선택을 우선 평가합니다.
-- 좋은 플레이도 최소 1개 이상 찾을 수 있으면 포함해서 사용자가 유지해야 할 습관을 알려줍니다.
-- 영상에서 반복되는 패턴이 보이면 서로 다른 시점의 근거를 연결해서 설명합니다.
-- 내용 없는 반복, 뻔한 문구, 불필요한 장황함은 피하고 실제 코칭에 도움이 되는 정보 밀도를 높입니다.
+- reaction time(ms), DPI 등 영상만으로 정확히 알 수 없는 수치를 추측하지 않습니다.
+- 중요한 장면은 최대 4개만 고릅니다. 중복 장면보다 서로 다른 강점·실수·판단을 우선합니다.
+- summary는 3~4문장, event observation은 1문장, feedback은 1~2문장으로 간결하게 작성합니다.
+- top_priorities는 최대 3개, limitations는 최대 2개입니다.
+- 좋은 플레이도 근거가 있으면 최소 1개 포함합니다.
+
+에이전트/스킬 판별:
+- HUD 하단 스킬 아이콘, 손/장비, 스킬 효과를 함께 보고 플레이어 에이전트를 판단합니다.
+- 한 가지 단서만으로 확정하지 않습니다. 불명확하면 agent를 Unknown으로 둡니다.
+- 에이전트를 판단한 뒤에는 그 에이전트가 실제로 보유한 스킬만 후보로 사용합니다.
+- 각 주요 장면에서 스킬 사용이 명확할 때만 ability_name을 작성합니다. 총격·이동·무기 교체를 스킬로 오인하지 않습니다.
+- 스킬이 불명확하면 ability_name은 null, ability_confidence는 낮게 둡니다.
 
 티어 예측:
 - 실제 랭크/MMR이 아니라 이 클립에서 관찰되는 플레이 수준의 추정치입니다.
 - 가능한 티어: Iron, Bronze, Silver, Gold, Platinum, Diamond, Ascendant, Immortal, Radiant.
-- Aim만 보지 말고 Movement, Positioning, Utility, Decision Making과 일관성을 함께 봅니다.
-- 짧거나 근거가 부족한 클립은 confidence를 낮게 주며, 근거가 매우 적으면 0.45 이하로 둡니다.
-- reason은 한국어 2~3문장으로 작성하며, 티어를 높게 본 근거와 낮게 본 근거를 모두 포함합니다.
-- 실제 랭크와 다를 수 있음을 limitations에 포함합니다.
+- Aim뿐 아니라 Movement, Positioning, Utility, Decision Making을 함께 봅니다.
+- 짧거나 근거가 부족한 클립은 confidence를 낮게 둡니다.
 """
 
 
-DEFAULT_PRIMARY_MODEL = "gemini-3.5-flash-lite"
-LOW_COST_FALLBACK_MODEL = "gemini-3.1-flash-lite"
+# Economy defaults. 3.1 Flash-Lite is cheaper than 3.5 Flash-Lite.
+DEFAULT_PRIMARY_MODEL = "gemini-3.1-flash-lite"
+QUALITY_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 DEPRECATED_MODELS = {
     "gemini-2.5-flash-lite",
     "models/gemini-2.5-flash-lite",
@@ -164,25 +116,28 @@ def _truthy_env(name: str, default: bool = False) -> bool:
 
 def _normalize_model(model: str) -> str:
     value = str(model or "").strip()
-    if value in DEPRECATED_MODELS:
+    if value.startswith("models/"):
+        value = value.removeprefix("models/")
+    if value in {"gemini-2.5-flash-lite"}:
         print(
             f"[Gemini] deprecated model '{value}' ignored; "
             f"using {DEFAULT_PRIMARY_MODEL} instead"
         )
         return DEFAULT_PRIMARY_MODEL
-    if value.startswith("models/"):
-        value = value.removeprefix("models/")
     return value
 
 
 def _models() -> list[str]:
-    primary = _normalize_model(
-        os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_PRIMARY_MODEL)
-    )
-    if not primary:
-        primary = DEFAULT_PRIMARY_MODEL
+    # Cost-first is ON by default. This prevents an old Render environment
+    # variable such as GEMINI_PRIMARY_MODEL=gemini-3.5-flash-lite from silently
+    # making every analysis more expensive.
+    prefer_low_cost = _truthy_env("PREFER_LOW_COST_MODEL", True)
+    requested = _normalize_model(os.getenv("GEMINI_PRIMARY_MODEL", ""))
 
-    candidates = [primary, DEFAULT_PRIMARY_MODEL, LOW_COST_FALLBACK_MODEL]
+    if prefer_low_cost:
+        candidates = [DEFAULT_PRIMARY_MODEL, QUALITY_FALLBACK_MODEL]
+    else:
+        candidates = [requested or DEFAULT_PRIMARY_MODEL, DEFAULT_PRIMARY_MODEL, QUALITY_FALLBACK_MODEL]
 
     if _truthy_env("ALLOW_EXPENSIVE_MODEL_FALLBACK", False):
         env_models = os.getenv("GEMINI_MODELS", "").strip()
@@ -227,13 +182,11 @@ def _wait_for_file(client: genai.Client, uploaded):
     for _ in range(120):
         current = client.files.get(name=uploaded.name)
         state = getattr(getattr(current, "state", None), "name", None)
-
         if state == "ACTIVE":
             return current
         if state == "FAILED":
             raise RuntimeError("Gemini 영상 처리에 실패했습니다.")
         time.sleep(2)
-
     raise RuntimeError("Gemini 영상 처리 시간이 너무 오래 걸렸습니다.")
 
 
@@ -251,18 +204,18 @@ def _build_prompt(calibration: dict, vision_hint: dict | None = None) -> str:
 
     calibration_prompt = str(calibration.get("prompt") or "").strip()
     if calibration_prompt:
-        parts.append(calibration_prompt[:2200])
+        # Aggregate feedback is useful, but cap it tightly so historical
+        # calibration cannot keep inflating every paid request.
+        parts.append(calibration_prompt[:900])
 
     if vision_hint and vision_hint.get("label"):
         confidence = float(vision_hint.get("confidence") or 0)
         sample_count = int(vision_hint.get("sample_count") or 0)
         if confidence >= 0.45 and sample_count >= 2:
             parts.append(
-                "사이트의 별도 학습형 이미지 분류기가 HUD 프레임을 기반으로 "
-                f"플레이어 에이전트를 '{vision_hint['label']}'로 예측했습니다 "
-                f"(학습 샘플 {sample_count}개, 내부 신뢰도 {confidence:.2f}). "
-                "이 값은 사용자의 정정 데이터로 실제 학습된 보조 모델의 힌트일 뿐 정답으로 강제하지 마세요. "
-                "영상의 HUD/스킬 아이콘/효과와 일치할 때만 채택하고, 불일치하면 영상 근거를 우선하세요."
+                f"보조 이미지 분류기 힌트: 에이전트 '{vision_hint['label']}' "
+                f"(신뢰도 {confidence:.2f}, 샘플 {sample_count}). "
+                "영상 근거와 일치할 때만 사용하세요."
             )
 
     return "\n\n".join(parts)
@@ -281,11 +234,23 @@ def _safe_failure_detail(errors_seen: list[str]) -> tuple[int, str]:
     if "400" in text or "invalid_argument" in lower:
         return 503, "Gemini가 영상 분석 요청 형식을 거부했습니다. Render 로그의 '[Gemini] API 오류' 한 줄을 확인해 주세요."
     if "validation" in lower or "json" in lower or "빈 응답" in text:
-        return 503, "Gemini 응답 형식 검증에 실패했습니다. 저가형 대체 모델까지 시도했습니다."
+        return 503, "Gemini 응답 형식 검증에 실패했습니다. 대체 모델까지 시도했습니다."
     if "503" in text or "unavailable" in lower:
         return 503, "Gemini 서버가 일시적으로 사용할 수 없습니다. 무료 분석 횟수는 차감되지 않았습니다."
 
     return 503, "Gemini 영상 분석 단계에서 오류가 발생했습니다. Render 로그에서 '[Gemini]'로 시작하는 줄을 확인해 주세요."
+
+
+def _usage_metadata(response) -> dict:
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return {}
+    return {
+        "prompt_tokens": int(getattr(usage, "prompt_token_count", 0) or 0),
+        "output_tokens": int(getattr(usage, "candidates_token_count", 0) or 0),
+        "thought_tokens": int(getattr(usage, "thoughts_token_count", 0) or 0),
+        "total_tokens": int(getattr(usage, "total_token_count", 0) or 0),
+    }
 
 
 def _generate(client: genai.Client, uploaded, calibration: dict, vision_hint: dict | None = None) -> dict:
@@ -294,7 +259,7 @@ def _generate(client: genai.Client, uploaded, calibration: dict, vision_hint: di
 
     for model in _models():
         print(
-            f"[Gemini] {model} 시도 · economy · File API default video processing · "
+            f"[Gemini] {model} 시도 · cost-first · low media resolution · minimal thinking · "
             f"feedback n={calibration.get('sample_size', 0)}"
         )
 
@@ -306,7 +271,10 @@ def _generate(client: genai.Client, uploaded, calibration: dict, vision_hint: di
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_schema=ValorantAnalysis,
-                        temperature=0.15,
+                        temperature=0.10,
+                        max_output_tokens=1800,
+                        media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW,
+                        thinking_config=types.ThinkingConfig(thinking_level="minimal"),
                         automatic_function_calling=types.AutomaticFunctionCallingConfig(
                             disable=True
                         ),
@@ -324,18 +292,14 @@ def _generate(client: genai.Client, uploaded, calibration: dict, vision_hint: di
                         + (f" (finish_reason={finish_reason})" if finish_reason else "")
                     )
 
-                result = (
-                    ValorantAnalysis
-                    .model_validate_json(response.text)
-                    .model_dump()
-                )
-
-                result["events"] = list(result.get("events") or [])[:6]
-                result["top_priorities"] = list(result.get("top_priorities") or [])[:4]
-                result["limitations"] = list(result.get("limitations") or [])[:3]
+                result = ValorantAnalysis.model_validate_json(response.text).model_dump()
+                result["events"] = list(result.get("events") or [])[:4]
+                result["top_priorities"] = list(result.get("top_priorities") or [])[:3]
+                result["limitations"] = list(result.get("limitations") or [])[:2]
                 result["model_used"] = model
                 result["analysis_fps"] = 1
-                result["media_resolution"] = "default"
+                result["media_resolution"] = "low"
+                result["thinking_level"] = "minimal"
                 result["economy_mode"] = True
                 result["vision_learning_hint_used"] = bool(
                     vision_hint
@@ -345,12 +309,19 @@ def _generate(client: genai.Client, uploaded, calibration: dict, vision_hint: di
                 )
                 result["vision_learning_hint"] = vision_hint or {}
                 result["feedback_calibration_used"] = bool(calibration.get("prompt"))
-                result["feedback_calibration_samples"] = int(
-                    calibration.get("sample_size") or 0
-                )
-                result["feedback_calibration_source"] = str(
-                    calibration.get("source") or "none"
-                )
+                result["feedback_calibration_samples"] = int(calibration.get("sample_size") or 0)
+                result["feedback_calibration_source"] = str(calibration.get("source") or "none")
+                result["token_usage"] = _usage_metadata(response)
+
+                usage = result["token_usage"]
+                if usage:
+                    print(
+                        "[Gemini] tokens · "
+                        f"input={usage.get('prompt_tokens', 0)} · "
+                        f"output={usage.get('output_tokens', 0)} · "
+                        f"thinking={usage.get('thought_tokens', 0)} · "
+                        f"total={usage.get('total_tokens', 0)}"
+                    )
                 return result
 
             except errors.APIError as exc:
@@ -358,24 +329,18 @@ def _generate(client: genai.Client, uploaded, calibration: dict, vision_hint: di
                 errors_seen.append(f"{model}: {text}")
                 print(f"[Gemini] API 오류: {text}")
 
-                if (
-                    ("429" in text or "RESOURCE_EXHAUSTED" in text)
-                    and _daily_quota(text)
-                ):
+                if ("429" in text or "RESOURCE_EXHAUSTED" in text) and _daily_quota(text):
                     break
-
                 if "429" in text or "RESOURCE_EXHAUSTED" in text:
                     if attempt < 2:
                         time.sleep(8)
                         continue
                     break
-
                 if "503" in text or "UNAVAILABLE" in text:
                     if attempt < 2:
                         time.sleep(4)
                         continue
                     break
-
                 break
 
             except (ValueError, RuntimeError) as exc:
@@ -400,7 +365,6 @@ def analyze_video(video_path: Path, vision_hint: dict | None = None) -> dict:
 
     try:
         calibration = _safe_feedback_calibration()
-
         try:
             uploaded = client.files.upload(file=video_path)
             uploaded = _wait_for_file(client, uploaded)
