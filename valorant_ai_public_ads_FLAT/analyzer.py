@@ -147,8 +147,12 @@ PROMPT = """
 """
 
 
-DEFAULT_PRIMARY_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_PRIMARY_MODEL = "gemini-3.5-flash-lite"
 LOW_COST_FALLBACK_MODEL = "gemini-3.1-flash-lite"
+DEPRECATED_MODELS = {
+    "gemini-2.5-flash-lite",
+    "models/gemini-2.5-flash-lite",
+}
 
 
 def _truthy_env(name: str, default: bool = False) -> bool:
@@ -158,8 +162,23 @@ def _truthy_env(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _normalize_model(model: str) -> str:
+    value = str(model or "").strip()
+    if value in DEPRECATED_MODELS:
+        print(
+            f"[Gemini] deprecated model '{value}' ignored; "
+            f"using {DEFAULT_PRIMARY_MODEL} instead"
+        )
+        return DEFAULT_PRIMARY_MODEL
+    if value.startswith("models/"):
+        value = value.removeprefix("models/")
+    return value
+
+
 def _models() -> list[str]:
-    primary = os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_PRIMARY_MODEL).strip()
+    primary = _normalize_model(
+        os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_PRIMARY_MODEL)
+    )
     if not primary:
         primary = DEFAULT_PRIMARY_MODEL
 
@@ -169,7 +188,7 @@ def _models() -> list[str]:
         env_models = os.getenv("GEMINI_MODELS", "").strip()
         if env_models:
             candidates.extend(
-                x.strip()
+                _normalize_model(x)
                 for x in env_models.split(",")
                 if x.strip()
             )
@@ -177,6 +196,7 @@ def _models() -> list[str]:
     seen = set()
     ordered = []
     for model in candidates:
+        model = _normalize_model(model)
         if model and model not in seen:
             seen.add(model)
             ordered.append(model)
@@ -257,7 +277,7 @@ def _safe_failure_detail(errors_seen: list[str]) -> tuple[int, str]:
     if "403" in text or "permission_denied" in lower:
         return 503, "Gemini API 키 또는 프로젝트 권한 문제입니다. Render의 GEMINI_API_KEY 설정을 확인해 주세요."
     if "404" in text or "not_found" in lower or "not found" in lower:
-        return 503, "현재 설정된 Gemini 모델을 사용할 수 없습니다. 저가형 대체 모델까지 시도했지만 실패했습니다."
+        return 503, "현재 설정된 Gemini 모델을 사용할 수 없습니다. 지원되는 Flash-Lite 대체 모델까지 시도했지만 실패했습니다."
     if "400" in text or "invalid_argument" in lower:
         return 503, "Gemini가 영상 분석 요청 형식을 거부했습니다. Render 로그의 '[Gemini] API 오류' 한 줄을 확인해 주세요."
     if "validation" in lower or "json" in lower or "빈 응답" in text:
