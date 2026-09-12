@@ -9,32 +9,43 @@ from supabase import create_client
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_SECRET_KEY = (
-    os.getenv("SUPABASE_SECRET_KEY", "").strip()
-    or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+SUPABASE_PUBLISHABLE_KEY = (
+    os.getenv("SUPABASE_PUBLISHABLE_KEY", "").strip()
+    or os.getenv("SUPABASE_ANON_KEY", "").strip()
 )
 
 TABLE_NAME = "analysis_history"
-_client = None
-
-
-def _db_client():
-    global _client
-    if not (SUPABASE_URL and SUPABASE_SECRET_KEY):
-        return None
-    if _client is None:
-        _client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-    return _client
 
 
 def history_is_configured() -> bool:
-    return bool(SUPABASE_URL and SUPABASE_SECRET_KEY)
+    return bool(SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY)
 
 
-def save_analysis(user_id: str, file_name: str, result: dict[str, Any]) -> dict:
-    client = _db_client()
-    if client is None:
+def _user_client(access_token: str, refresh_token: str = ""):
+    if not history_is_configured():
         raise RuntimeError("ANALYSIS_HISTORY_NOT_CONFIGURED")
+    if not access_token:
+        raise RuntimeError("ANALYSIS_HISTORY_AUTH_REQUIRED")
+
+    client = create_client(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)
+
+    # The normal auth flow already validated this session. Reuse it here so
+    # Postgres RLS can enforce auth.uid() = user_id for every history action.
+    if refresh_token:
+        client.auth.set_session(access_token, refresh_token)
+    else:
+        client.postgrest.auth(access_token)
+    return client
+
+
+def save_analysis(
+    user_id: str,
+    file_name: str,
+    result: dict[str, Any],
+    access_token: str,
+    refresh_token: str = "",
+) -> dict:
+    client = _user_client(access_token, refresh_token)
 
     analysis_id = str(result.get("analysis_id") or "").strip()
     if not analysis_id:
@@ -64,10 +75,13 @@ def save_analysis(user_id: str, file_name: str, result: dict[str, Any]) -> dict:
     return data[0] if data else row
 
 
-def list_analyses(user_id: str, limit: int = 50) -> list[dict]:
-    client = _db_client()
-    if client is None:
-        raise RuntimeError("ANALYSIS_HISTORY_NOT_CONFIGURED")
+def list_analyses(
+    user_id: str,
+    access_token: str,
+    refresh_token: str = "",
+    limit: int = 50,
+) -> list[dict]:
+    client = _user_client(access_token, refresh_token)
 
     response = (
         client.table(TABLE_NAME)
@@ -82,10 +96,13 @@ def list_analyses(user_id: str, limit: int = 50) -> list[dict]:
     return list(response.data or [])
 
 
-def get_analysis(user_id: str, analysis_id: str) -> dict | None:
-    client = _db_client()
-    if client is None:
-        raise RuntimeError("ANALYSIS_HISTORY_NOT_CONFIGURED")
+def get_analysis(
+    user_id: str,
+    analysis_id: str,
+    access_token: str,
+    refresh_token: str = "",
+) -> dict | None:
+    client = _user_client(access_token, refresh_token)
 
     response = (
         client.table(TABLE_NAME)
@@ -99,10 +116,13 @@ def get_analysis(user_id: str, analysis_id: str) -> dict | None:
     return data[0] if data else None
 
 
-def delete_analysis(user_id: str, analysis_id: str) -> bool:
-    client = _db_client()
-    if client is None:
-        raise RuntimeError("ANALYSIS_HISTORY_NOT_CONFIGURED")
+def delete_analysis(
+    user_id: str,
+    analysis_id: str,
+    access_token: str,
+    refresh_token: str = "",
+) -> bool:
+    client = _user_client(access_token, refresh_token)
 
     response = (
         client.table(TABLE_NAME)
