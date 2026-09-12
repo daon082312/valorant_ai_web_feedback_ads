@@ -69,13 +69,11 @@ class ValorantAnalysis(BaseModel):
     )
     tier_prediction: TierPrediction
     scores: ScoreSet
-    events: list[Event] = Field(max_length=3)
+    events: list[Event]
     top_priorities: list[str] = Field(
-        max_length=2,
         description="가장 먼저 개선할 점 최대 2개를 각각 짧은 한국어 문장으로 작성",
     )
     limitations: list[str] = Field(
-        max_length=2,
         description="분석 한계 최대 2개를 각각 짧은 한국어 문장으로 작성",
     )
 
@@ -154,8 +152,6 @@ def _models() -> list[str]:
 
 
 def _video_fps() -> float:
-    # 1 FPS is Gemini's normal low-cost temporal sampling rate.
-    # It is substantially cheaper than the earlier 4 FPS and 1.5 FPS modes.
     raw = os.getenv("VIDEO_ANALYSIS_FPS", "1").strip()
     try:
         value = float(raw)
@@ -192,7 +188,6 @@ def _build_prompt(calibration: dict) -> str:
     if not calibration_prompt:
         return PROMPT
 
-    # Aggregate-only calibration; raw user comments are never model instructions.
     return f"{PROMPT}\n\n{calibration_prompt[:2200]}"
 
 
@@ -234,10 +229,10 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                         media_resolution=(
                             types.MediaResolution.MEDIA_RESOLUTION_LOW
                         ),
-                        thinking_config=types.ThinkingConfig(
-                            thinking_budget=0
-                        ),
-                        max_output_tokens=900,
+                        # Flash-Lite already has thinking off by default.
+                        # Do not force ThinkingConfig here; keeping the request
+                        # simpler improves compatibility across SDK/API versions.
+                        max_output_tokens=1800,
                     ),
                 )
 
@@ -249,6 +244,12 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                     .model_validate_json(response.text)
                     .model_dump()
                 )
+
+                # Prompt-level limits are safer than strict schema maxItems for
+                # structured generation. Trim any overlong result after validation.
+                result["events"] = list(result.get("events") or [])[:3]
+                result["top_priorities"] = list(result.get("top_priorities") or [])[:2]
+                result["limitations"] = list(result.get("limitations") or [])[:2]
 
                 result["model_used"] = model
                 result["analysis_fps"] = fps
@@ -268,6 +269,7 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
             except errors.APIError as exc:
                 text = str(exc)
                 errors_seen.append(f"{model}: {text}")
+                print(f"[Gemini] API 오류: {text}")
 
                 if (
                     ("429" in text or "RESOURCE_EXHAUSTED" in text)
@@ -294,10 +296,13 @@ def _generate(client: genai.Client, uploaded, calibration: dict) -> dict:
                 ):
                     break
 
-                raise
+                # Treat other model/API incompatibilities as a model failure so
+                # the app returns a controlled analysis error instead of crashing.
+                break
 
             except (ValueError, RuntimeError) as exc:
                 errors_seen.append(f"{model}: {exc}")
+                print(f"[Gemini] 응답 검증 오류: {exc}")
                 break
 
     details = "\n\n".join(errors_seen[-2:])
