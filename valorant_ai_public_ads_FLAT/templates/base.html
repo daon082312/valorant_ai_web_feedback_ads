@@ -20,6 +20,7 @@
     <link rel="stylesheet" href="/static/style.css">
     <link rel="stylesheet" href="/static/auth.css">
     <link rel="stylesheet" href="/static/premium.css">
+    <link rel="stylesheet" href="/static/nav_modal.css">
     {% block head %}{% endblock %}
 </head>
 <body>
@@ -43,7 +44,6 @@
     <nav class="nav">
         <a class="brand" href="/">VALORANT AI COACH</a>
         <div class="nav-links">
-            <a href="/">새 영상 분석</a>
             <a href="/premium" class="premium-nav-link">Premium</a>
             <a href="/history">내 분석</a>
             <a href="/guide">사용 가이드</a>
@@ -61,7 +61,6 @@
 
     <footer class="footer">
         <div class="footer-links">
-            <a href="/">새 영상 분석</a>
             <a href="/premium">Premium</a>
             <a href="/history">내 분석</a>
             <a href="/about">About</a>
@@ -166,6 +165,7 @@
     })();
     </script>
 
+    <script src="/static/nav_modal.js"></script>
     {% block scripts %}{% endblock %}
 </body>
 </html>
