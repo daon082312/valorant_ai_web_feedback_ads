@@ -52,8 +52,6 @@ def _download_portrait(agent: dict) -> tuple[str, Image.Image] | None:
 
 
 def _portrait_feature(image: Image.Image) -> np.ndarray:
-    # Killfeed portraits may be tinted by team colours, so emphasize luminance,
-    # edges and face/silhouette structure rather than exact RGB colour.
     gray = np.asarray(
         image.convert("L").resize((32, 32), Image.Resampling.BILINEAR),
         dtype=np.float32,
@@ -77,7 +75,7 @@ def _portrait_feature(image: Image.Image) -> np.ndarray:
 
 
 def _ensure_portraits(force: bool = False) -> list[tuple[str, Image.Image]]:
-    global _cached_portraits, _cached_features, _cached_at, _cached_signature
+    global _cached_portraits, _cached_features, _cached_at, _cached_signature, _cached_sheet
     catalog = get_catalog()
     if not catalog:
         return []
@@ -107,6 +105,8 @@ def _ensure_portraits(force: bool = False) -> list[tuple[str, Image.Image]]:
         _cached_portraits = {name: portrait for name, portrait in portraits}
         _cached_features = {name: _portrait_feature(portrait) for name, portrait in portraits}
         _cached_at = now
+        if signature != _cached_signature or force:
+            _cached_sheet = None
         _cached_signature = signature
     return portraits
 
@@ -156,12 +156,10 @@ def build_agent_portrait_reference_sheet(force: bool = False) -> bytes:
 
 
 def match_agent_portrait_in_killfeed(image_bytes: bytes, agent_name: str) -> dict:
-    """Look for one agent portrait anywhere inside an enlarged killfeed crop.
+    """Look for one agent portrait inside an enlarged killfeed crop.
 
-    This is a cheap reference matcher, not a final kill decision. Its score is
-    supplied to Gemini as an extra signal; side/row/assist semantics are still
-    decided by the verifier because a portrait can belong to attacker, victim,
-    or assist UI.
+    This is a cheap reference matcher, not a final kill decision. Side/row and
+    assist semantics are still decided by Gemini.
     """
     _ensure_portraits()
     wanted_key = _name_key(agent_name)
@@ -177,7 +175,6 @@ def match_agent_portrait_in_killfeed(image_bytes: bytes, agent_name: str) -> dic
     except Exception:
         return {"ready": False, "reason": "invalid_image", "agent": target_name}
 
-    # Normalize width so window sizes are predictable across capture resolutions.
     if image.width > 720:
         scale = 720.0 / image.width
         image = image.resize(
@@ -197,12 +194,14 @@ def match_agent_portrait_in_killfeed(image_bytes: bytes, agent_name: str) -> dic
     best_score = -1.0
     best_box = None
 
+    # In the enlarged crop, real killfeed rows are concentrated toward the
+    # right. Scanning only that region keeps CPU use low while still allowing
+    # assist icons to shift the exact portrait location.
+    left_start = int(width * 0.22)
     for size in sizes:
-        step = max(8, size // 3)
-        # Portraits are square-ish and can appear in any killfeed row. Scan the
-        # full enlarged crop because assist icons can shift the entry geometry.
+        step = max(10, size // 2)
         for top in range(0, max(1, height - size + 1), step):
-            for left in range(0, max(1, width - size + 1), step):
+            for left in range(left_start, max(left_start + 1, width - size + 1), step):
                 crop = image.crop((left, top, left + size, top + size))
                 feature = _portrait_feature(crop)
                 score = float(np.dot(feature, target))
@@ -210,8 +209,6 @@ def match_agent_portrait_in_killfeed(image_bytes: bytes, agent_name: str) -> dic
                     best_score = score
                     best_box = (left, top, size, size)
 
-    # This matcher deliberately uses a conservative threshold. Scores below the
-    # threshold are still returned so Gemini can treat them as weak evidence.
     ready = best_score >= 0.54
     return {
         "ready": bool(ready),
