@@ -22,6 +22,27 @@ function formatFileSize(bytes) {
     return `${gb.toFixed(2)} GB`;
 }
 
+function resetOverallFeedback() {
+    selectedOverallRating = null;
+
+    document.querySelectorAll(".feedback-choice").forEach(button => {
+        button.classList.remove("selected");
+    });
+
+    document.querySelectorAll(".categories input[type='checkbox']").forEach(input => {
+        input.checked = false;
+    });
+
+    const comment = document.getElementById("overallComment");
+    if (comment) comment.value = "";
+
+    const submit = document.getElementById("submitOverallFeedback");
+    if (submit) submit.disabled = true;
+
+    const message = document.getElementById("overallFeedbackStatus");
+    if (message) message.textContent = "";
+}
+
 async function refreshUsage() {
     try {
         const r = await fetch("/usage", {credentials: "same-origin"});
@@ -82,6 +103,8 @@ async function refreshUsage() {
 
 videoInput.addEventListener("change", async () => {
     selectedFile = videoInput.files[0] || null;
+    currentAnalysis = null;
+    resetOverallFeedback();
 
     if (selectedFile) {
         if (fileInfo) {
@@ -94,6 +117,7 @@ videoInput.addEventListener("change", async () => {
         if (fileInfo) fileInfo.textContent = "선택된 영상 없음";
         videoPlayer.removeAttribute("src");
         videoPlayer.style.display = "none";
+        results.classList.add("hidden");
     }
 
     await refreshUsage();
@@ -270,7 +294,9 @@ function renderEvents(events) {
 }
 
 function renderResult(data) {
+    resetOverallFeedback();
     currentAnalysis = data;
+
     document.getElementById("overallScore").textContent = data.overall_score;
     document.getElementById("summary").textContent = data.summary;
     renderTier(data.tier_prediction);
