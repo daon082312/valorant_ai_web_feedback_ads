@@ -161,10 +161,166 @@ videoInput.addEventListener("change", async () => {
 });
 
 function timestampToSeconds(ts) {
-    const p = ts.trim().split(":").map(Number);
+    const p = String(ts || "").trim().split(":").map(Number);
     if (p.length === 2) return p[0] * 60 + p[1];
     if (p.length === 3) return p[0] * 3600 + p[1] * 60 + p[2];
     return 0;
+}
+
+function waitForEventOnce(target, eventName, timeoutMs = 3000) {
+    return new Promise((resolve, reject) => {
+        let timer = null;
+        const done = () => {
+            if (timer) clearTimeout(timer);
+            target.removeEventListener(eventName, done);
+            resolve();
+        };
+        target.addEventListener(eventName, done, {once: true});
+        timer = setTimeout(() => {
+            target.removeEventListener(eventName, done);
+            reject(new Error("영상 프레임을 준비하지 못했습니다."));
+        }, timeoutMs);
+    });
+}
+
+async function captureFrameAt(seconds) {
+    if (!videoPlayer.src) throw new Error("영상이 없습니다.");
+
+    if (videoPlayer.readyState < 1) {
+        await waitForEventOnce(videoPlayer, "loadedmetadata", 5000);
+    }
+
+    const duration = Number(videoPlayer.duration || 0);
+    const target = Math.max(0, Math.min(Number(seconds || 0), duration > 0 ? Math.max(0, duration - 0.05) : Number(seconds || 0)));
+    const previousTime = Number(videoPlayer.currentTime || 0);
+    const wasPaused = videoPlayer.paused;
+
+    if (Math.abs(previousTime - target) > 0.04) {
+        videoPlayer.pause();
+        videoPlayer.currentTime = target;
+        await waitForEventOnce(videoPlayer, "seeked", 4000);
+    }
+
+    const sourceWidth = videoPlayer.videoWidth || 1280;
+    const sourceHeight = videoPlayer.videoHeight || 720;
+    const width = Math.min(640, sourceWidth);
+    const height = Math.max(1, Math.round(sourceHeight * (width / sourceWidth)));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d", {alpha: false});
+    ctx.drawImage(videoPlayer, 0, 0, width, height);
+    const imageData = canvas.toDataURL("image/jpeg", 0.72);
+
+    if (Math.abs(previousTime - target) > 0.04) {
+        videoPlayer.currentTime = Math.max(0, Math.min(previousTime, duration || previousTime));
+    }
+    if (!wasPaused) {
+        // Do not resume automatically; timestamp navigation in this app is intentionally pause-first.
+        videoPlayer.pause();
+    }
+
+    return imageData;
+}
+
+async function visionRequest(path, payload) {
+    const response = await fetch(path, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        credentials: "same-origin",
+        body: JSON.stringify(payload)
+    });
+    const data = await readJsonResponse(response, "학습 서버");
+    if (!response.ok) {
+        throw new Error(data.detail || `학습 서버 오류 (HTTP ${response.status})`);
+    }
+    return data;
+}
+
+async function predictVision(targetType, seconds) {
+    try {
+        const imageData = await captureFrameAt(seconds);
+        const prediction = await visionRequest("/vision/predict", {
+            target_type: targetType,
+            image_data: imageData
+        });
+        if (!prediction.ready || !Array.isArray(prediction.candidates) || prediction.candidates.length < 2) {
+            return {ready: false, reason: prediction.reason || "needs_more_labels"};
+        }
+        return prediction;
+    } catch (error) {
+        console.warn("학습 모델 예측 생략", error);
+        return {ready: false, reason: "prediction_failed"};
+    }
+}
+
+async function trainVision({targetType, label, seconds, eventIndex, predictedLabel}) {
+    if (!currentAnalysis?.analysis_id) throw new Error("분석 ID가 없습니다.");
+    const cleanLabel = String(label || "").trim();
+    if (!cleanLabel) throw new Error("정답 이름을 입력해 주세요.");
+
+    const imageData = await captureFrameAt(seconds);
+    return await visionRequest("/vision/train", {
+        target_type: targetType,
+        image_data: imageData,
+        label: cleanLabel,
+        analysis_id: currentAnalysis.analysis_id,
+        event_index: eventIndex,
+        predicted_label: predictedLabel || ""
+    });
+}
+
+function agentSampleTime(data) {
+    const firstEvent = Array.isArray(data?.events) && data.events.length ? data.events[0] : null;
+    if (firstEvent?.timestamp) return timestampToSeconds(firstEvent.timestamp);
+    const duration = Number(videoPlayer.duration || 0);
+    return duration > 0 ? Math.min(1.0, duration * 0.25) : 0;
+}
+
+async function applyLearnedVisionPredictions(data) {
+    if (!data || !videoPlayer.src) return data;
+
+    const agentPred = await predictVision("agent", agentSampleTime(data));
+    data.learned_agent_prediction = agentPred;
+    if (
+        agentPred.ready &&
+        agentPred.sample_count >= 2 &&
+        agentPred.confidence >= 0.60 &&
+        (
+            !data.agent_prediction ||
+            data.agent_prediction.agent === "Unknown" ||
+            Number(data.agent_prediction.confidence || 0) < 0.65 ||
+            agentPred.confidence >= 0.78
+        )
+    ) {
+        const original = data.agent_prediction?.agent || "Unknown";
+        data.agent_prediction = {
+            agent: agentPred.label,
+            confidence: Math.max(Number(data.agent_prediction?.confidence || 0), agentPred.confidence),
+            reason: `사용자 정정 데이터로 학습된 이미지 모델이 ${agentPred.label}로 보정했습니다. Gemini의 최초 판별은 ${original}였습니다.`,
+            learned_model: true,
+            original_agent: original
+        };
+    }
+
+    const events = Array.isArray(data.events) ? data.events : [];
+    for (const event of events) {
+        if (!(event.ability_name || event.category === "utility")) continue;
+        const prediction = await predictVision("skill", timestampToSeconds(event.timestamp));
+        event.learned_skill_prediction = prediction;
+        if (
+            prediction.ready &&
+            prediction.sample_count >= 2 &&
+            prediction.confidence >= 0.72 &&
+            (!event.ability_name || Number(event.ability_confidence || 0) < 0.70 || prediction.confidence >= 0.82)
+        ) {
+            event.original_ability_name = event.ability_name || null;
+            event.ability_name = prediction.label;
+            event.ability_confidence = prediction.confidence;
+            event.ability_from_learned_model = true;
+        }
+    }
+    return data;
 }
 
 async function sendFeedback(payload) {
@@ -246,6 +402,22 @@ function renderScores(scores) {
         row.append(name, bar, score);
         root.appendChild(row);
     }
+}
+
+function renderAgent(prediction) {
+    const name = document.getElementById("agentPredictionName");
+    const confidence = document.getElementById("agentPredictionConfidence");
+    const reason = document.getElementById("agentPredictionReason");
+    const input = document.getElementById("agentCorrectionInput");
+    const status = document.getElementById("agentTrainingStatus");
+
+    const agent = prediction?.agent || "Unknown";
+    const conf = Math.round(Math.max(0, Math.min(1, Number(prediction?.confidence || 0))) * 100);
+    name.textContent = agent === "Unknown" ? "판별 불가" : agent;
+    confidence.textContent = `신뢰도 ${conf}%${prediction?.learned_model ? " · 학습 모델 보정" : ""}`;
+    reason.textContent = prediction?.reason || "영상에서 에이전트를 확실히 판별하지 못했습니다.";
+    input.value = agent === "Unknown" ? "" : agent;
+    status.textContent = "틀렸다면 실제 에이전트명을 입력하고 ‘정답으로 학습’을 누르세요. 이미지 원본은 저장하지 않습니다.";
 }
 
 function renderTier(prediction) {
@@ -337,6 +509,57 @@ function renderEvents(events) {
         const feedback = document.createElement("p");
         feedback.textContent = `피드백: ${event.feedback}`;
 
+        const abilityRow = document.createElement("div");
+        abilityRow.className = "vision-ability-row";
+        const abilityLabel = document.createElement("span");
+        abilityLabel.className = "muted";
+        abilityLabel.textContent = "스킬 판별:";
+        const abilityName = document.createElement("span");
+        abilityName.className = "vision-ability-name";
+        abilityName.textContent = event.ability_name || "판별 안 됨";
+        const abilityConf = document.createElement("span");
+        abilityConf.className = `badge${event.ability_from_learned_model ? " vision-learned-badge" : ""}`;
+        abilityConf.textContent = event.ability_name
+            ? `신뢰도 ${Math.round(Number(event.ability_confidence || 0) * 100)}%${event.ability_from_learned_model ? " · 학습 모델" : ""}`
+            : "--";
+        abilityRow.append(abilityLabel, abilityName, abilityConf);
+
+        const skillCorrection = document.createElement("div");
+        skillCorrection.className = "vision-correction";
+        const skillInput = document.createElement("input");
+        skillInput.maxLength = 60;
+        skillInput.placeholder = "틀렸다면 실제 스킬명 (예: Tailwind)";
+        skillInput.value = event.ability_name || "";
+        const skillTrain = document.createElement("button");
+        skillTrain.type = "button";
+        skillTrain.textContent = "정답으로 학습";
+        const skillStatus = document.createElement("span");
+        skillStatus.className = "vision-training-status";
+        skillTrain.onclick = async () => {
+            skillTrain.disabled = true;
+            skillStatus.textContent = "학습 중...";
+            try {
+                const result = await trainVision({
+                    targetType: "skill",
+                    label: skillInput.value,
+                    seconds: timestampToSeconds(event.timestamp),
+                    eventIndex: index,
+                    predictedLabel: event.ability_name || ""
+                });
+                event.ability_name = result.label;
+                abilityName.textContent = result.label;
+                const samples = result.model?.sample_count ?? 0;
+                const labels = result.model?.label_count ?? 0;
+                skillStatus.textContent = `학습 완료 · 스킬 샘플 ${samples}개 / 라벨 ${labels}종`;
+                await saveAnalysisHistory(currentAnalysis, selectedFile?.name || "영상");
+            } catch (error) {
+                skillStatus.textContent = `오류: ${error.message}`;
+            } finally {
+                skillTrain.disabled = false;
+            }
+        };
+        skillCorrection.append(skillInput, skillTrain, skillStatus);
+
         const vote = document.createElement("div");
         vote.className = "event-feedback";
         const label = document.createElement("span");
@@ -375,7 +598,7 @@ function renderEvents(events) {
         down.onclick = () => submit("down", down);
 
         vote.append(label, up, down, msg);
-        box.append(head, observation, feedback, vote);
+        box.append(head, observation, feedback, abilityRow, skillCorrection, vote);
         root.appendChild(box);
     });
 }
@@ -386,6 +609,7 @@ function renderResult(data) {
 
     document.getElementById("overallScore").textContent = data.overall_score;
     document.getElementById("summary").textContent = data.summary;
+    renderAgent(data.agent_prediction);
     renderTier(data.tier_prediction);
     renderScores(data.scores);
     renderEvents(data.events || []);
@@ -408,6 +632,39 @@ function renderResult(data) {
 
     results.classList.remove("hidden");
 }
+
+const trainAgentBtn = document.getElementById("trainAgentBtn");
+trainAgentBtn?.addEventListener("click", async () => {
+    if (!currentAnalysis) return;
+    const input = document.getElementById("agentCorrectionInput");
+    const status = document.getElementById("agentTrainingStatus");
+    trainAgentBtn.disabled = true;
+    status.textContent = "학습 중...";
+    try {
+        const result = await trainVision({
+            targetType: "agent",
+            label: input.value,
+            seconds: agentSampleTime(currentAnalysis),
+            eventIndex: -1,
+            predictedLabel: currentAnalysis.agent_prediction?.agent || ""
+        });
+        currentAnalysis.agent_prediction = {
+            agent: result.label,
+            confidence: 1,
+            reason: "사용자가 실제 에이전트로 정정하여 학습 데이터에 반영했습니다.",
+            learned_from_user_correction: true
+        };
+        renderAgent(currentAnalysis.agent_prediction);
+        const samples = result.model?.sample_count ?? 0;
+        const labels = result.model?.label_count ?? 0;
+        status.textContent = `학습 완료 · 에이전트 샘플 ${samples}개 / 라벨 ${labels}종`;
+        await saveAnalysisHistory(currentAnalysis, selectedFile?.name || "영상");
+    } catch (error) {
+        status.textContent = `오류: ${error.message}`;
+    } finally {
+        trainAgentBtn.disabled = false;
+    }
+});
 
 analyzeBtn.addEventListener("click", async () => {
     if (!selectedFile || analysisInProgress) return;
@@ -439,6 +696,8 @@ analyzeBtn.addEventListener("click", async () => {
             throw new Error(detail || "분석 실패");
         }
 
+        statusBox.textContent = "Gemini 분석 완료 · 학습 모델로 에이전트/스킬 판별을 교차 확인하는 중...";
+        await applyLearnedVisionPredictions(data);
         renderResult(data);
         const historySaved = await saveAnalysisHistory(data, selectedFile?.name || "영상");
         const baseStatus = data.usage && data.usage.premium
