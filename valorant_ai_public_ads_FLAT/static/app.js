@@ -3,12 +3,24 @@ const videoPlayer = document.getElementById("videoPlayer");
 const analyzeBtn = document.getElementById("analyzeBtn");
 const statusBox = document.getElementById("status");
 const usageBox = document.getElementById("usageBox");
+const fileInfo = document.getElementById("fileInfo");
 const results = document.getElementById("results");
 
 let selectedFile = null;
 let currentAnalysis = null;
 let selectedOverallRating = null;
 let premiumUnlimited = false;
+
+function formatFileSize(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return "--";
+    if (bytes < 1024) return `${bytes} B`;
+    const kb = bytes / 1024;
+    if (kb < 1024) return `${kb.toFixed(1)} KB`;
+    const mb = kb / 1024;
+    if (mb < 1024) return `${mb.toFixed(1)} MB`;
+    const gb = mb / 1024;
+    return `${gb.toFixed(2)} GB`;
+}
 
 async function refreshUsage() {
     try {
@@ -70,11 +82,20 @@ async function refreshUsage() {
 
 videoInput.addEventListener("change", async () => {
     selectedFile = videoInput.files[0] || null;
+
     if (selectedFile) {
+        if (fileInfo) {
+            fileInfo.textContent = `${selectedFile.name} · ${formatFileSize(selectedFile.size)}`;
+        }
         videoPlayer.src = URL.createObjectURL(selectedFile);
         videoPlayer.style.display = "block";
         results.classList.add("hidden");
+    } else {
+        if (fileInfo) fileInfo.textContent = "선택된 영상 없음";
+        videoPlayer.removeAttribute("src");
+        videoPlayer.style.display = "none";
     }
+
     await refreshUsage();
 });
 
