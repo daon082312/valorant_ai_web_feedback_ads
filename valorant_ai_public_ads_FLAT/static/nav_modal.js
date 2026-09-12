@@ -17,14 +17,48 @@
         return document.documentElement.classList.contains("analysis-in-progress");
     }
 
+    function cleanupModalState() {
+        document.documentElement.classList.remove("analysis-modal-open");
+        document.body.classList.remove("analysis-modal-open");
+    }
+
+    function closeModal() {
+        cleanupModalState();
+
+        if (frame) {
+            try {
+                frame.src = "about:blank";
+            } catch (_) {
+                // Ignore iframe cleanup errors.
+            }
+        }
+
+        if (modal) {
+            modal.classList.remove("open");
+            modal.setAttribute("aria-hidden", "true");
+            modal.style.pointerEvents = "none";
+            modal.remove();
+        }
+
+        modal = null;
+        frame = null;
+        modalTitle = null;
+        modalSub = null;
+    }
+
     function ensureModal() {
-        if (modal) return;
+        if (modal && document.body.contains(modal)) return;
+
+        // Clear any stale modal left behind by a previous interrupted render.
+        document.querySelectorAll(".analysis-page-modal").forEach(node => node.remove());
+        cleanupModalState();
 
         modal = document.createElement("div");
         modal.className = "analysis-page-modal";
         modal.setAttribute("role", "dialog");
         modal.setAttribute("aria-modal", "true");
         modal.setAttribute("aria-label", "사이트 페이지 창");
+        modal.setAttribute("aria-hidden", "true");
 
         const card = document.createElement("div");
         card.className = "analysis-page-modal-card";
@@ -46,7 +80,11 @@
         close.className = "analysis-page-modal-close";
         close.setAttribute("aria-label", "창 닫기");
         close.textContent = "×";
-        close.addEventListener("click", closeModal);
+        close.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            closeModal();
+        });
 
         frame = document.createElement("iframe");
         frame.className = "analysis-page-modal-frame";
@@ -70,28 +108,28 @@
     }
 
     function openModal(url) {
+        // Always start from a clean modal state so an old transparent overlay
+        // can never remain above the page.
+        if (modal) closeModal();
         ensureModal();
+
         const parsed = embeddedUrl(url);
         modalTitle.textContent = titleByPath[parsed.pathname] || "페이지";
         modalSub.textContent = isAnalysisRunning()
             ? "영상 분석은 뒤에서 계속 진행됩니다."
             : "창을 닫으면 원래 화면으로 돌아갑니다.";
+
         frame.src = parsed.href;
+        modal.setAttribute("aria-hidden", "false");
+        modal.style.pointerEvents = "auto";
         modal.classList.add("open");
         document.documentElement.classList.add("analysis-modal-open");
         document.body.classList.add("analysis-modal-open");
     }
 
-    function closeModal() {
-        if (!modal) return;
-        modal.classList.remove("open");
-        document.documentElement.classList.remove("analysis-modal-open");
-        document.body.classList.remove("analysis-modal-open");
-        if (frame) frame.src = "about:blank";
-    }
-
     document.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && modal?.classList.contains("open")) {
+            event.preventDefault();
             closeModal();
         }
     });
@@ -117,6 +155,17 @@
         event.stopImmediatePropagation();
         openModal(url.href);
     }, true);
+
+    // Recover automatically if the browser restores this page from bfcache
+    // with stale modal classes or a detached overlay.
+    window.addEventListener("pageshow", () => {
+        document.querySelectorAll(".analysis-page-modal").forEach(node => node.remove());
+        modal = null;
+        frame = null;
+        modalTitle = null;
+        modalSub = null;
+        cleanupModalState();
+    });
 
     const statusObserver = new MutationObserver(() => {
         const status = document.getElementById("status");
