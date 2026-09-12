@@ -3,6 +3,89 @@
     font-weight: 850;
 }
 
+/* Top navigation: button-style UI with hover/focus feedback. */
+.nav-links {
+    align-items: center;
+    gap: 8px;
+}
+
+.nav-links > a,
+.auth-nav > a,
+.nav-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 36px;
+    padding: 8px 12px;
+    border: 1px solid #313946;
+    border-radius: 10px;
+    background: #151a22;
+    color: #c9d0da !important;
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1;
+    cursor: pointer;
+    transition:
+        background-color .18s ease,
+        border-color .18s ease,
+        color .18s ease,
+        transform .18s ease,
+        box-shadow .18s ease;
+}
+
+.nav-links > a:hover,
+.auth-nav > a:hover,
+.nav-button:hover {
+    background: #252c37;
+    border-color: #536073;
+    color: #ffffff !important;
+    transform: translateY(-1px);
+    box-shadow: 0 7px 20px rgba(0, 0, 0, .24);
+}
+
+.nav-links > a:active,
+.auth-nav > a:active,
+.nav-button:active {
+    transform: translateY(0);
+    box-shadow: none;
+}
+
+.nav-links > a:focus-visible,
+.auth-nav > a:focus-visible,
+.nav-button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* Premium gets its own gold treatment. */
+.nav-links > .premium-nav-link {
+    border-color: rgba(246, 211, 101, .42);
+    background: rgba(246, 211, 101, .08);
+    color: #f6d365 !important;
+}
+
+.nav-links > .premium-nav-link:hover {
+    border-color: #f6d365;
+    background: #f6d365;
+    color: #14171d !important;
+    box-shadow: 0 7px 22px rgba(246, 211, 101, .18);
+}
+
+/* Before login, make the sign-up button the strongest call-to-action. */
+.auth-nav > a:last-of-type {
+    border-color: rgba(255, 70, 85, .48);
+    background: rgba(255, 70, 85, .10);
+    color: #ff8993 !important;
+}
+
+.auth-nav > a:last-of-type:hover {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #ffffff !important;
+    box-shadow: 0 7px 22px rgba(255, 70, 85, .22);
+}
+
 .premium-badge {
     display: inline-flex;
     align-items: center;
@@ -19,7 +102,7 @@
 .auth-nav {
     display: inline-flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
 }
 
 .premium-hero {
