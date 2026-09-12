@@ -45,6 +45,7 @@ class CombatEventRequest(BaseModel):
 class CombatVerifyRequest(BaseModel):
     analysis_id: str = Field(min_length=1, max_length=100)
     summary: str = Field(default="", max_length=3000)
+    player_agent: str = Field(default="", max_length=80)
     events: list[CombatEventRequest] = Field(min_length=1, max_length=6)
 
 
@@ -129,7 +130,7 @@ def build_vision_router(get_auth_context, attach_refreshed_session, public_base_
                 for image_data in event.frames[:3]:
                     raw = decode_data_url(image_data)
                     total_bytes += len(raw)
-                    if total_bytes > 8 * 1024 * 1024:
+                    if total_bytes > 10 * 1024 * 1024:
                         return JSONResponse({"detail": "전투 검증 이미지가 너무 큽니다."}, status_code=413)
                     frames.append(raw)
                 decoded_events.append({
@@ -144,6 +145,7 @@ def build_vision_router(get_auth_context, attach_refreshed_session, public_base_
                 verify_combat_events,
                 decoded_events,
                 payload.summary,
+                payload.player_agent,
             )
             response = JSONResponse(result)
             return attach_refreshed_session(response, auth)
