@@ -1,0 +1,23 @@
+name: Premium Billing Renewal
+
+on:
+  schedule:
+    - cron: "15 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run due Premium renewals
+        env:
+          BILLING_CRON_URL: ${{ secrets.BILLING_CRON_URL }}
+          BILLING_CRON_TOKEN: ${{ secrets.BILLING_CRON_TOKEN }}
+        run: |
+          test -n "$BILLING_CRON_URL" || (echo "BILLING_CRON_URL secret is missing" && exit 1)
+          test -n "$BILLING_CRON_TOKEN" || (echo "BILLING_CRON_TOKEN secret is missing" && exit 1)
+          curl --fail-with-body --silent --show-error \
+            --max-time 180 \
+            -X POST "$BILLING_CRON_URL/internal/billing/run" \
+            -H "Authorization: Bearer $BILLING_CRON_TOKEN" \
+            -H "Content-Type: application/json"
