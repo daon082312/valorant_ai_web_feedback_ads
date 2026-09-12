@@ -49,7 +49,7 @@ class FeedbackRequest(BaseModel):
 def common_context(request: Request) -> dict:
     return {
         "request": request,
-        "contact_email": CONTACT_EMAIL,
+        "contact_email": leejongin.md@gmail.com,
         "adsense_client": ADSENSE_CLIENT,
         "adsense_top_slot": ADSENSE_TOP_SLOT,
         "adsense_result_slot": ADSENSE_RESULT_SLOT,
