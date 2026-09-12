@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
-import json
+import asyncio
 import os
 import shutil
 import tempfile
 import uuid
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
@@ -20,6 +15,12 @@ from pydantic import BaseModel, Field
 
 from analyzer import analyze_video
 from feedback_store import save_feedback
+from usage_store import (
+    DailyLimitExceeded,
+    get_remaining,
+    record_success,
+    usage_is_configured,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -33,15 +34,6 @@ ADSENSE_CLIENT = os.getenv("ADSENSE_CLIENT", "").strip()
 ADSENSE_TOP_SLOT = os.getenv("ADSENSE_TOP_SLOT", "").strip()
 ADSENSE_RESULT_SLOT = os.getenv("ADSENSE_RESULT_SLOT", "").strip()
 
-USAGE_COOKIE_NAME = "valorant_ai_daily_usage"
-LOCAL_TZ = ZoneInfo("Asia/Seoul")
-
-USAGE_SIGNING_SECRET = (
-    os.getenv("USAGE_SIGNING_SECRET")
-    or os.getenv("GEMINI_API_KEY")
-    or "local-development-only-change-this"
-).encode("utf-8")
-
 
 app = FastAPI(title="VALORANT AI Coach")
 
@@ -54,6 +46,9 @@ app.mount(
 templates = Jinja2Templates(
     directory=str(BASE_DIR / "templates")
 )
+
+_ip_locks: dict[str, asyncio.Lock] = {}
+_ip_locks_guard = asyncio.Lock()
 
 
 class FeedbackRequest(BaseModel):
@@ -76,6 +71,21 @@ def common_context(request: Request) -> dict:
         "adsense_result_slot": ADSENSE_RESULT_SLOT,
         "adsense_enabled": bool(ADSENSE_CLIENT),
     }
+
+
+def get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+
+    return request.client.host if request.client else "unknown"
+
+
+async def get_ip_lock(ip: str) -> asyncio.Lock:
+    async with _ip_locks_guard:
+        if ip not in _ip_locks:
+            _ip_locks[ip] = asyncio.Lock()
+        return _ip_locks[ip]
 
 
 def classify_analysis_error(exc: Exception) -> tuple[int, str, str]:
@@ -114,91 +124,21 @@ def classify_analysis_error(exc: Exception) -> tuple[int, str, str]:
     )
 
 
-# -------------------------------------------------------------------
-# Signed cookie usage counter
-# -------------------------------------------------------------------
-
-def _today() -> str:
-    return datetime.now(LOCAL_TZ).date().isoformat()
-
-
-def _sign(value: str) -> str:
-    return hmac.new(
-        USAGE_SIGNING_SECRET,
-        value.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-
-def _make_usage_cookie(count: int) -> str:
-    payload = json.dumps(
-        {
-            "date": _today(),
-            "count": max(0, int(count)),
+def usage_database_error_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": {
+                "code": "USAGE_DATABASE_UNAVAILABLE",
+                "message": (
+                    "사용 횟수 데이터베이스에 연결할 수 없습니다. "
+                    "잠시 후 다시 시도해 주세요."
+                ),
+                "daily_limit": DAILY_LIMIT,
+            }
         },
-        separators=(",", ":"),
     )
 
-    encoded = base64.urlsafe_b64encode(
-        payload.encode("utf-8")
-    ).decode("ascii")
-
-    return f"{encoded}.{_sign(encoded)}"
-
-
-def _get_used_count(request: Request) -> int:
-    token = request.cookies.get(USAGE_COOKIE_NAME)
-
-    if not token:
-        return 0
-
-    try:
-        encoded, signature = token.rsplit(".", 1)
-
-        if not hmac.compare_digest(
-            signature,
-            _sign(encoded),
-        ):
-            return 0
-
-        decoded = base64.urlsafe_b64decode(
-            encoded.encode("ascii")
-        ).decode("utf-8")
-
-        payload = json.loads(decoded)
-
-        if payload.get("date") != _today():
-            return 0
-
-        count = int(payload.get("count", 0))
-
-        if count < 0:
-            return 0
-
-        return count
-
-    except Exception:
-        return 0
-
-
-def _set_usage_cookie(
-    response: JSONResponse,
-    count: int,
-) -> None:
-    response.set_cookie(
-        key=USAGE_COOKIE_NAME,
-        value=_make_usage_cookie(count),
-        max_age=60 * 60 * 24 * 7,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-        path="/",
-    )
-
-
-# -------------------------------------------------------------------
-# Pages
-# -------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -247,19 +187,30 @@ async def guide(request: Request):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "usage_database_configured": usage_is_configured(),
+    }
 
 
 @app.get("/usage")
 async def usage(request: Request):
-    used = _get_used_count(request)
+    if not usage_is_configured():
+        return usage_database_error_response()
+
+    ip = get_client_ip(request)
+
+    try:
+        remaining = await asyncio.to_thread(
+            get_remaining,
+            ip,
+            DAILY_LIMIT,
+        )
+    except Exception:
+        return usage_database_error_response()
 
     return {
-        "used": used,
-        "remaining": max(
-            DAILY_LIMIT - used,
-            0,
-        ),
+        "remaining": remaining,
         "daily_limit": DAILY_LIMIT,
     }
 
@@ -316,150 +267,180 @@ async def sitemap_xml():
     )
 
 
-# -------------------------------------------------------------------
-# Analysis
-# -------------------------------------------------------------------
-
 @app.post("/analyze")
 async def analyze(
     request: Request,
     file: UploadFile = File(...),
 ):
-    used_before = _get_used_count(request)
+    if not usage_is_configured():
+        return usage_database_error_response()
 
-    if used_before >= DAILY_LIMIT:
-        return JSONResponse(
-            status_code=429,
-            content={
-                "detail": {
-                    "code": "USER_DAILY_LIMIT",
-                    "message": (
-                        f"오늘 무료 분석 횟수 "
-                        f"{DAILY_LIMIT}회를 모두 사용했습니다."
-                    ),
-                    "remaining": 0,
-                    "daily_limit": DAILY_LIMIT,
-                }
-            },
-        )
+    ip = get_client_ip(request)
+    lock = await get_ip_lock(ip)
 
-    if not file.filename:
-        raise HTTPException(
-            status_code=400,
-            detail="파일 이름이 없습니다.",
-        )
+    async with lock:
+        try:
+            remaining_before = await asyncio.to_thread(
+                get_remaining,
+                ip,
+                DAILY_LIMIT,
+            )
+        except Exception:
+            return usage_database_error_response()
 
-    suffix = Path(file.filename).suffix.lower()
-
-    allowed = {
-        ".mp4",
-        ".mov",
-        ".webm",
-        ".avi",
-        ".mkv",
-    }
-
-    if suffix not in allowed:
-        raise HTTPException(
-            status_code=400,
-            detail="지원하지 않는 영상 형식입니다.",
-        )
-
-    temp_path: Path | None = None
-
-    try:
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=suffix,
-        ) as tmp:
-            temp_path = Path(tmp.name)
-            shutil.copyfileobj(
-                file.file,
-                tmp,
+        if remaining_before <= 0:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": {
+                        "code": "USER_DAILY_LIMIT",
+                        "message": (
+                            f"오늘 무료 분석 횟수 "
+                            f"{DAILY_LIMIT}회를 모두 사용했습니다."
+                        ),
+                        "remaining": 0,
+                        "daily_limit": DAILY_LIMIT,
+                    }
+                },
             )
 
-        size_mb = (
-            temp_path.stat().st_size
-            / 1024
-            / 1024
-        )
-
-        if size_mb > MAX_UPLOAD_MB:
+        if not file.filename:
             raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"업로드 파일은 최대 "
-                    f"{MAX_UPLOAD_MB}MB까지 가능합니다."
-                ),
+                status_code=400,
+                detail="파일 이름이 없습니다.",
             )
 
-        result = analyze_video(temp_path)
+        suffix = Path(file.filename).suffix.lower()
 
-        used_after = used_before + 1
-
-        remaining_after = max(
-            DAILY_LIMIT - used_after,
-            0,
-        )
-
-        result["analysis_id"] = uuid.uuid4().hex
-
-        result["usage"] = {
-            "remaining": remaining_after,
-            "daily_limit": DAILY_LIMIT,
+        allowed = {
+            ".mp4",
+            ".mov",
+            ".webm",
+            ".avi",
+            ".mkv",
         }
 
-        response = JSONResponse(
-            status_code=200,
-            content=result,
-        )
+        if suffix not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail="지원하지 않는 영상 형식입니다.",
+            )
 
-        _set_usage_cookie(
-            response,
-            used_after,
-        )
+        temp_path: Path | None = None
 
-        return response
-
-    except HTTPException:
-        raise
-
-    except Exception as exc:
-        status, code, message = classify_analysis_error(
-            exc
-        )
-
-        return JSONResponse(
-            status_code=status,
-            content={
-                "detail": {
-                    "code": code,
-                    "message": message,
-                    "remaining": max(
-                        DAILY_LIMIT - used_before,
-                        0,
-                    ),
-                    "daily_limit": DAILY_LIMIT,
-                }
-            },
-        )
-
-    finally:
         try:
-            await file.close()
-        except Exception:
-            pass
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=suffix,
+            ) as tmp:
+                temp_path = Path(tmp.name)
+                shutil.copyfileobj(
+                    file.file,
+                    tmp,
+                )
 
-        if temp_path and temp_path.exists():
+            size_mb = (
+                temp_path.stat().st_size
+                / 1024
+                / 1024
+            )
+
+            if size_mb > MAX_UPLOAD_MB:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"업로드 파일은 최대 "
+                        f"{MAX_UPLOAD_MB}MB까지 가능합니다."
+                    ),
+                )
+
+            result = await asyncio.to_thread(
+                analyze_video,
+                temp_path,
+            )
+
             try:
-                temp_path.unlink()
+                used_today = await asyncio.to_thread(
+                    record_success,
+                    ip,
+                    DAILY_LIMIT,
+                )
+            except DailyLimitExceeded:
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "detail": {
+                            "code": "USER_DAILY_LIMIT",
+                            "message": (
+                                f"오늘 무료 분석 횟수 "
+                                f"{DAILY_LIMIT}회를 모두 사용했습니다."
+                            ),
+                            "remaining": 0,
+                            "daily_limit": DAILY_LIMIT,
+                        }
+                    },
+                )
+            except Exception:
+                return usage_database_error_response()
+
+            remaining_after = max(
+                DAILY_LIMIT - used_today,
+                0,
+            )
+
+            result["analysis_id"] = uuid.uuid4().hex
+
+            result["usage"] = {
+                "remaining": remaining_after,
+                "daily_limit": DAILY_LIMIT,
+            }
+
+            return JSONResponse(
+                status_code=200,
+                content=result,
+            )
+
+        except HTTPException:
+            raise
+
+        except Exception as exc:
+            status, code, message = classify_analysis_error(
+                exc
+            )
+
+            try:
+                remaining_now = await asyncio.to_thread(
+                    get_remaining,
+                    ip,
+                    DAILY_LIMIT,
+                )
+            except Exception:
+                remaining_now = remaining_before
+
+            return JSONResponse(
+                status_code=status,
+                content={
+                    "detail": {
+                        "code": code,
+                        "message": message,
+                        "remaining": remaining_now,
+                        "daily_limit": DAILY_LIMIT,
+                    }
+                },
+            )
+
+        finally:
+            try:
+                await file.close()
             except Exception:
                 pass
 
+            if temp_path and temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    pass
 
-# -------------------------------------------------------------------
-# Feedback
-# -------------------------------------------------------------------
 
 @app.post("/feedback")
 async def feedback(
