@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-import asyncio
+import base64
+import hashlib
+import hmac
+import json
 import os
 import shutil
 import tempfile
 import uuid
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
@@ -16,7 +21,9 @@ from pydantic import BaseModel, Field
 from analyzer import analyze_video
 from feedback_store import save_feedback
 
+
 BASE_DIR = Path(__file__).resolve().parent
+
 DAILY_LIMIT = int(os.getenv("DAILY_ANALYSIS_LIMIT", "3"))
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "100"))
 CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "contact@example.com")
@@ -26,12 +33,27 @@ ADSENSE_CLIENT = os.getenv("ADSENSE_CLIENT", "").strip()
 ADSENSE_TOP_SLOT = os.getenv("ADSENSE_TOP_SLOT", "").strip()
 ADSENSE_RESULT_SLOT = os.getenv("ADSENSE_RESULT_SLOT", "").strip()
 
-app = FastAPI(title="VALORANT AI Coach")
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+USAGE_COOKIE_NAME = "valorant_ai_daily_usage"
+LOCAL_TZ = ZoneInfo("Asia/Seoul")
 
-_ip_locks: dict[str, asyncio.Lock] = {}
-_ip_locks_guard = asyncio.Lock()
+USAGE_SIGNING_SECRET = (
+    os.getenv("USAGE_SIGNING_SECRET")
+    or os.getenv("GEMINI_API_KEY")
+    or "local-development-only-change-this"
+).encode("utf-8")
+
+
+app = FastAPI(title="VALORANT AI Coach")
+
+app.mount(
+    "/static",
+    StaticFiles(directory=str(BASE_DIR / "static")),
+    name="static",
+)
+
+templates = Jinja2Templates(
+    directory=str(BASE_DIR / "templates")
+)
 
 
 class FeedbackRequest(BaseModel):
@@ -56,24 +78,15 @@ def common_context(request: Request) -> dict:
     }
 
 
-def get_client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
-
-
-async def get_ip_lock(ip: str) -> asyncio.Lock:
-    async with _ip_locks_guard:
-        if ip not in _ip_locks:
-            _ip_locks[ip] = asyncio.Lock()
-        return _ip_locks[ip]
-
-
 def classify_analysis_error(exc: Exception) -> tuple[int, str, str]:
     text = str(exc)
 
-    if "429" in text or "RESOURCE_EXHAUSTED" in text or "quota" in text.lower():
+    if (
+        "429" in text
+        or "RESOURCE_EXHAUSTED" in text
+        or "quota" in text.lower()
+        or "prepayment credits" in text.lower()
+    ):
         return (
             503,
             "AI_QUOTA_EXHAUSTED",
@@ -81,19 +94,111 @@ def classify_analysis_error(exc: Exception) -> tuple[int, str, str]:
             "개인 무료 분석 횟수는 차감되지 않았습니다.",
         )
 
-    if "503" in text or "UNAVAILABLE" in text or "high demand" in text.lower():
+    if (
+        "503" in text
+        or "UNAVAILABLE" in text
+        or "high demand" in text.lower()
+    ):
         return (
             503,
             "AI_TEMPORARILY_UNAVAILABLE",
-            "현재 AI 서버가 혼잡합니다. 개인 무료 분석 횟수는 차감되지 않았습니다.",
+            "현재 AI 서버가 혼잡합니다. "
+            "개인 무료 분석 횟수는 차감되지 않았습니다.",
         )
 
     return (
         500,
         "ANALYSIS_FAILED",
-        "분석 중 오류가 발생했습니다. 개인 무료 분석 횟수는 차감되지 않았습니다.",
+        "분석 중 오류가 발생했습니다. "
+        "개인 무료 분석 횟수는 차감되지 않았습니다.",
     )
 
+
+# -------------------------------------------------------------------
+# Signed cookie usage counter
+# -------------------------------------------------------------------
+
+def _today() -> str:
+    return datetime.now(LOCAL_TZ).date().isoformat()
+
+
+def _sign(value: str) -> str:
+    return hmac.new(
+        USAGE_SIGNING_SECRET,
+        value.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _make_usage_cookie(count: int) -> str:
+    payload = json.dumps(
+        {
+            "date": _today(),
+            "count": max(0, int(count)),
+        },
+        separators=(",", ":"),
+    )
+
+    encoded = base64.urlsafe_b64encode(
+        payload.encode("utf-8")
+    ).decode("ascii")
+
+    return f"{encoded}.{_sign(encoded)}"
+
+
+def _get_used_count(request: Request) -> int:
+    token = request.cookies.get(USAGE_COOKIE_NAME)
+
+    if not token:
+        return 0
+
+    try:
+        encoded, signature = token.rsplit(".", 1)
+
+        if not hmac.compare_digest(
+            signature,
+            _sign(encoded),
+        ):
+            return 0
+
+        decoded = base64.urlsafe_b64decode(
+            encoded.encode("ascii")
+        ).decode("utf-8")
+
+        payload = json.loads(decoded)
+
+        if payload.get("date") != _today():
+            return 0
+
+        count = int(payload.get("count", 0))
+
+        if count < 0:
+            return 0
+
+        return count
+
+    except Exception:
+        return 0
+
+
+def _set_usage_cookie(
+    response: JSONResponse,
+    count: int,
+) -> None:
+    response.set_cookie(
+        key=USAGE_COOKIE_NAME,
+        value=_make_usage_cookie(count),
+        max_age=60 * 60 * 24 * 7,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+# -------------------------------------------------------------------
+# Pages
+# -------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -140,11 +245,17 @@ async def guide(request: Request):
     )
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.get("/usage")
 async def usage(request: Request):
     used = _get_used_count(request)
 
     return {
+        "used": used,
         "remaining": max(
             DAILY_LIMIT - used,
             0,
@@ -159,22 +270,45 @@ async def ads_txt():
         return "# AdSense publisher ID is not configured yet.\n"
 
     publisher_id = ADSENSE_CLIENT.removeprefix("ca-")
-    return f"google.com, {publisher_id}, DIRECT, f08c47fec0942fa0\n"
+
+    return (
+        f"google.com, {publisher_id}, DIRECT, "
+        "f08c47fec0942fa0\n"
+    )
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
 async def robots_txt():
-    sitemap = f"\nSitemap: {PUBLIC_BASE_URL}/sitemap.xml" if PUBLIC_BASE_URL else ""
+    sitemap = (
+        f"\nSitemap: {PUBLIC_BASE_URL}/sitemap.xml"
+        if PUBLIC_BASE_URL
+        else ""
+    )
+
     return f"User-agent: *\nAllow: /\n{sitemap}\n"
 
 
 @app.get("/sitemap.xml", response_class=PlainTextResponse)
 async def sitemap_xml():
     if not PUBLIC_BASE_URL:
-        return '<?xml version="1.0" encoding="UTF-8"?><urlset></urlset>'
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            "<urlset></urlset>"
+        )
 
-    paths = ["", "/about", "/privacy", "/terms", "/guide"]
-    urls = "".join(f"<url><loc>{PUBLIC_BASE_URL}{p}</loc></url>" for p in paths)
+    paths = [
+        "",
+        "/about",
+        "/privacy",
+        "/terms",
+        "/guide",
+    ]
+
+    urls = "".join(
+        f"<url><loc>{PUBLIC_BASE_URL}{p}</loc></url>"
+        for p in paths
+    )
+
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
@@ -182,197 +316,187 @@ async def sitemap_xml():
     )
 
 
+# -------------------------------------------------------------------
+# Analysis
+# -------------------------------------------------------------------
+
 @app.post("/analyze")
-async def analyze(request: Request, file: UploadFile = File(...)):
+async def analyze(
+    request: Request,
+    file: UploadFile = File(...),
+):
     used_before = _get_used_count(request)
 
-if used_before >= DAILY_LIMIT:
-    raise HTTPException(
-        status_code=429,
-        detail={
-            "code": "USER_DAILY_LIMIT",
-            "message": (
-                f"오늘 무료 분석 횟수 "
-                f"{DAILY_LIMIT}회를 모두 사용했습니다."
-            ),
-            "remaining": 0,
-            "daily_limit": DAILY_LIMIT,
-        },
-    )
-        if remaining_before <= 0:
-            raise HTTPException(
-                status_code=429,
-                detail={
+    if used_before >= DAILY_LIMIT:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": {
                     "code": "USER_DAILY_LIMIT",
-                    "message": f"오늘 무료 분석 횟수 {DAILY_LIMIT}회를 모두 사용했습니다.",
+                    "message": (
+                        f"오늘 무료 분석 횟수 "
+                        f"{DAILY_LIMIT}회를 모두 사용했습니다."
+                    ),
                     "remaining": 0,
                     "daily_limit": DAILY_LIMIT,
-                },
-            )
-
-        if not file.filename:
-            raise HTTPException(status_code=400, detail="파일 이름이 없습니다.")
-
-        suffix = Path(file.filename).suffix.lower()
-        allowed = {".mp4", ".mov", ".webm", ".avi", ".mkv"}
-        if suffix not in allowed:
-            raise HTTPException(status_code=400, detail="지원하지 않는 영상 형식입니다.")
-
-        temp_path = None
-
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                temp_path = Path(tmp.name)
-                shutil.copyfileobj(file.file, tmp)
-
-            size_mb = temp_path.stat().st_size / 1024 / 1024
-            if size_mb > MAX_UPLOAD_MB:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"업로드 파일은 최대 {MAX_UPLOAD_MB}MB까지 가능합니다.",
-                )
-
-            result = analyze_video(temp_path)
-
-            used_after = used_before + 1
-
-remaining_after = max(
-    DAILY_LIMIT - used_after,
-    0,
-)
-
-result["usage"] = {
-    "remaining": remaining_after,
-    "daily_limit": DAILY_LIMIT,
-}
-
-response = JSONResponse(
-    status_code=200,
-    content=result,
-)
-
-response.set_cookie(
-    key=USAGE_COOKIE_NAME,
-    value=_make_usage_cookie(used_after),
-    max_age=60 * 60 * 24 * 7,
-    httponly=True,
-    secure=True,
-    samesite="lax",
-)
-
-return response
-
-        except HTTPException:
-            raise
-
-        except Exception as exc:
-            status, code, message = classify_analysis_error(exc)
-            return JSONResponse(
-                status_code=status,
-                content={
-                    "detail": {
-                        "code": code,
-                        "message": message,
-                        "remaining": get_remaining(ip, DAILY_LIMIT),
-                        "daily_limit": DAILY_LIMIT,USAGE_COOKIE_NAME = "valorant_ai_daily_usage"
-LOCAL_TZ = ZoneInfo("Asia/Seoul")
-
-USAGE_SIGNING_SECRET = (
-    os.getenv("USAGE_SIGNING_SECRET")
-    or os.getenv("GEMINI_API_KEY")
-).encode("utf-8")
-
-
-def _today():
-    return datetime.now(LOCAL_TZ).date().isoformat()
-
-
-def _sign(value):
-    return hmac.new(
-        USAGE_SIGNING_SECRET,
-        value.encode(),
-        hashlib.sha256,
-    ).hexdigest()
-
-
-def _make_usage_cookie(count):
-    payload = json.dumps({
-        "date": _today(),
-        "count": count,
-    })
-
-    encoded = base64.urlsafe_b64encode(
-        payload.encode()
-    ).decode()
-
-    return f"{encoded}.{_sign(encoded)}"
-
-
-def _get_used_count(request: Request):
-    token = request.cookies.get(
-        USAGE_COOKIE_NAME
-    )
-
-    if not token:
-        return 0
-
-    try:
-        encoded, signature = token.rsplit(".", 1)
-
-        if not hmac.compare_digest(
-            signature,
-            _sign(encoded),
-        ):
-            return 0
-
-        payload = json.loads(
-            base64.urlsafe_b64decode(
-                encoded.encode()
-            ).decode()
+                }
+            },
         )
 
-        if payload.get("date") != _today():
-            return 0
+    if not file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail="파일 이름이 없습니다.",
+        )
 
-        return int(payload.get("count", 0))
+    suffix = Path(file.filename).suffix.lower()
 
-    except Exception:
-        return 0
-                    }
-                },
+    allowed = {
+        ".mp4",
+        ".mov",
+        ".webm",
+        ".avi",
+        ".mkv",
+    }
+
+    if suffix not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail="지원하지 않는 영상 형식입니다.",
+        )
+
+    temp_path: Path | None = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=suffix,
+        ) as tmp:
+            temp_path = Path(tmp.name)
+            shutil.copyfileobj(
+                file.file,
+                tmp,
             )
 
-        finally:
+        size_mb = (
+            temp_path.stat().st_size
+            / 1024
+            / 1024
+        )
+
+        if size_mb > MAX_UPLOAD_MB:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"업로드 파일은 최대 "
+                    f"{MAX_UPLOAD_MB}MB까지 가능합니다."
+                ),
+            )
+
+        result = analyze_video(temp_path)
+
+        used_after = used_before + 1
+
+        remaining_after = max(
+            DAILY_LIMIT - used_after,
+            0,
+        )
+
+        result["analysis_id"] = uuid.uuid4().hex
+
+        result["usage"] = {
+            "remaining": remaining_after,
+            "daily_limit": DAILY_LIMIT,
+        }
+
+        response = JSONResponse(
+            status_code=200,
+            content=result,
+        )
+
+        _set_usage_cookie(
+            response,
+            used_after,
+        )
+
+        return response
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        status, code, message = classify_analysis_error(
+            exc
+        )
+
+        return JSONResponse(
+            status_code=status,
+            content={
+                "detail": {
+                    "code": code,
+                    "message": message,
+                    "remaining": max(
+                        DAILY_LIMIT - used_before,
+                        0,
+                    ),
+                    "daily_limit": DAILY_LIMIT,
+                }
+            },
+        )
+
+    finally:
+        try:
+            await file.close()
+        except Exception:
+            pass
+
+        if temp_path and temp_path.exists():
             try:
-                await file.close()
+                temp_path.unlink()
             except Exception:
                 pass
 
-            if temp_path and temp_path.exists():
-                try:
-                    temp_path.unlink()
-                except Exception:
-                    pass
 
+# -------------------------------------------------------------------
+# Feedback
+# -------------------------------------------------------------------
 
 @app.post("/feedback")
-async def feedback(payload: FeedbackRequest):
+async def feedback(
+    payload: FeedbackRequest,
+):
     if payload.target_type == "overall":
-        if payload.rating not in {"helpful", "partial", "not_helpful"}:
-            raise HTTPException(status_code=400, detail="잘못된 전체 평가입니다.")
+        if payload.rating not in {
+            "helpful",
+            "partial",
+            "not_helpful",
+        }:
+            raise HTTPException(
+                status_code=400,
+                detail="잘못된 전체 평가입니다.",
+            )
+
     else:
-        if payload.rating not in {"up", "down"}:
-            raise HTTPException(status_code=400, detail="잘못된 장면 평가입니다.")
+        if payload.rating not in {
+            "up",
+            "down",
+        }:
+            raise HTTPException(
+                status_code=400,
+                detail="잘못된 장면 평가입니다.",
+            )
+
         if payload.event_index is None:
-            raise HTTPException(status_code=400, detail="event_index가 필요합니다.")
+            raise HTTPException(
+                status_code=400,
+                detail="event_index가 필요합니다.",
+            )
 
-    feedback_id = save_feedback(payload.model_dump())
-    return {"ok": True, "feedback_id": feedback_id}
+    feedback_id = save_feedback(
+        payload.model_dump()
+    )
 
-    
-    import base64
-import hashlib
-import hmac
-import json
-from datetime import datetime
-from zoneinfo import ZoneInfo
+    return {
+        "ok": True,
+        "feedback_id": feedback_id,
+    }
