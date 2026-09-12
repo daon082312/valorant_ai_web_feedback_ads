@@ -12,6 +12,12 @@ from google.genai import errors, types
 from pydantic import BaseModel, Field
 
 from feedback_store import get_feedback_calibration
+from valorant_reference import (
+    abilities_for_agent,
+    canonical_ability,
+    canonical_agent,
+    compact_kit_prompt,
+)
 
 load_dotenv()
 
@@ -87,6 +93,7 @@ PROMPT = """
 - HUD 하단 스킬 아이콘, 손/장비, 스킬 효과를 함께 보고 플레이어 에이전트를 판단합니다.
 - 한 가지 단서만으로 확정하지 않습니다. 불명확하면 agent를 Unknown으로 둡니다.
 - 에이전트를 판단한 뒤에는 그 에이전트가 실제로 보유한 스킬만 후보로 사용합니다.
+- 아래 요원별 스킬 후보표와 일치하지 않는 스킬 이름은 절대로 쓰지 마세요.
 - 각 주요 장면에서 스킬 사용이 명확할 때만 ability_name을 작성합니다. 총격·이동·무기 교체를 스킬로 오인하지 않습니다.
 - 스킬이 불명확하면 ability_name은 null, ability_confidence는 낮게 둡니다.
 
@@ -98,7 +105,6 @@ PROMPT = """
 """
 
 
-# Economy defaults. 3.1 Flash-Lite is cheaper than 3.5 Flash-Lite.
 DEFAULT_PRIMARY_MODEL = "gemini-3.1-flash-lite"
 QUALITY_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 DEPRECATED_MODELS = {
@@ -128,9 +134,6 @@ def _normalize_model(model: str) -> str:
 
 
 def _models() -> list[str]:
-    # Cost-first is ON by default. This prevents an old Render environment
-    # variable such as GEMINI_PRIMARY_MODEL=gemini-3.5-flash-lite from silently
-    # making every analysis more expensive.
     prefer_low_cost = _truthy_env("PREFER_LOW_COST_MODEL", True)
     requested = _normalize_model(os.getenv("GEMINI_PRIMARY_MODEL", ""))
 
@@ -202,10 +205,12 @@ def _daily_quota(text: str) -> bool:
 def _build_prompt(calibration: dict, vision_hint: dict | None = None) -> str:
     parts = [PROMPT]
 
+    kit_prompt = compact_kit_prompt(max_chars=3600)
+    if kit_prompt:
+        parts.append(kit_prompt)
+
     calibration_prompt = str(calibration.get("prompt") or "").strip()
     if calibration_prompt:
-        # Aggregate feedback is useful, but cap it tightly so historical
-        # calibration cannot keep inflating every paid request.
         parts.append(calibration_prompt[:900])
 
     if vision_hint and vision_hint.get("label"):
@@ -253,6 +258,45 @@ def _usage_metadata(response) -> dict:
     }
 
 
+def _sanitize_agent_and_abilities(result: dict) -> None:
+    agent_prediction = result.get("agent_prediction") or {}
+    if not isinstance(agent_prediction, dict):
+        return
+
+    raw_agent = str(agent_prediction.get("agent") or "")
+    agent = canonical_agent(raw_agent)
+    if not agent:
+        return
+
+    agent_prediction["agent"] = agent
+    allowed = abilities_for_agent(agent)
+    if not allowed:
+        return
+
+    removed = 0
+    for event in result.get("events") or []:
+        if not isinstance(event, dict):
+            continue
+        raw_ability = str(event.get("ability_name") or "").strip()
+        if not raw_ability:
+            continue
+        ability = canonical_ability(agent, raw_ability)
+        if ability:
+            event["ability_name"] = ability
+            continue
+
+        event["ability_name"] = None
+        event["ability_confidence"] = 0.0
+        event["ability_validation_removed"] = raw_ability
+        removed += 1
+
+    result["ability_kit_validation"] = {
+        "agent": agent,
+        "allowed_abilities": allowed,
+        "removed_invalid_count": removed,
+    }
+
+
 def _generate(client: genai.Client, uploaded, calibration: dict, vision_hint: dict | None = None) -> dict:
     errors_seen: list[str] = []
     prompt = _build_prompt(calibration, vision_hint)
@@ -296,6 +340,8 @@ def _generate(client: genai.Client, uploaded, calibration: dict, vision_hint: di
                 result["events"] = list(result.get("events") or [])[:6]
                 result["top_priorities"] = list(result.get("top_priorities") or [])[:3]
                 result["limitations"] = list(result.get("limitations") or [])[:2]
+                _sanitize_agent_and_abilities(result)
+
                 result["model_used"] = model
                 result["analysis_fps"] = 1
                 result["media_resolution"] = "low"
