@@ -21,6 +21,22 @@ class ScoreSet(BaseModel):
     decision_making: int = Field(ge=0, le=100)
 
 
+class TierPrediction(BaseModel):
+    tier: Literal[
+        "Iron",
+        "Bronze",
+        "Silver",
+        "Gold",
+        "Platinum",
+        "Diamond",
+        "Ascendant",
+        "Immortal",
+        "Radiant",
+    ]
+    confidence: float = Field(ge=0, le=1)
+    reason: str
+
+
 class Event(BaseModel):
     timestamp: str
     category: Literal[
@@ -52,6 +68,7 @@ class ValorantAnalysis(BaseModel):
         le=100,
     )
     summary: str
+    tier_prediction: TierPrediction
     scores: ScoreSet
     events: list[Event]
     top_priorities: list[str]
@@ -63,7 +80,7 @@ PROMPT = """
 첨부된 게임 클립 전체를 시간 순서대로 분석하세요.
 
 - 영상에서 실제로 확인 가능한 내용만 말합니다.
-- 보이지 않는 적, 스킬, 팀원의 의도, 랭크를 추측하지 않습니다.
+- 보이지 않는 적, 스킬, 팀원의 의도는 추측하지 않습니다.
 - 불확실하면 confidence를 낮게 기록합니다.
 - 가능한 경우 MM:SS timestamp를 기록합니다.
 - 피드백은 한국어로 작성합니다.
@@ -74,6 +91,20 @@ PROMPT = """
   측정했다고 주장하지 마세요.
 - overall_score와 각 점수는 0~100입니다.
 - top_priorities는 최대 3개입니다.
+
+티어 예측 규칙:
+- tier_prediction은 계정의 실제 경쟁전 랭크를 읽거나 맞히는 기능이 아니라,
+  이 클립에서 관찰되는 플레이 수준을 바탕으로 한 추정치입니다.
+- 가능한 티어는 Iron, Bronze, Silver, Gold, Platinum, Diamond,
+  Ascendant, Immortal, Radiant 중 하나입니다.
+- Aim만 보지 말고 Movement, Positioning, Utility 사용,
+  Decision Making, 교전 선택, 크로스헤어 배치와 일관성을 종합합니다.
+- 한두 번의 좋은 킬 또는 나쁜 실수만으로 티어를 과도하게 올리거나 내리지 마세요.
+- 클립이 짧거나 판단할 장면이 적으면 tier_prediction.confidence를 낮게 주세요.
+  특히 근거가 부족하면 confidence를 0.45 이하로 설정하세요.
+- tier_prediction.reason에는 왜 그 티어로 추정했는지 핵심 근거를
+  1~3문장으로 한국어로 설명하세요.
+- 실제 랭크/MMR과 다를 수 있다는 점을 limitations에도 명시하세요.
 """
 
 
