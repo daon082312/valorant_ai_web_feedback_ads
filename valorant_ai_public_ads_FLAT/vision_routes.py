@@ -39,6 +39,7 @@ class CombatEventRequest(BaseModel):
     timestamp: str = Field(default="", max_length=20)
     observation: str = Field(default="", max_length=1000)
     feedback: str = Field(default="", max_length=1400)
+    dense_motion_strip: bool = False
     frames: list[str] = Field(min_length=2, max_length=3)
 
 
@@ -138,6 +139,7 @@ def build_vision_router(get_auth_context, attach_refreshed_session, public_base_
                     "timestamp": event.timestamp,
                     "observation": event.observation,
                     "feedback": event.feedback,
+                    "dense_motion_strip": bool(event.dense_motion_strip),
                     "frames": frames,
                 })
 
