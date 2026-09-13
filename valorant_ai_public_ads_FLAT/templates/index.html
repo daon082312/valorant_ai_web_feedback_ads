@@ -67,7 +67,7 @@
     </div>
 
     <section class="panel vision-learning-panel">
-        <div class="eyebrow">AGENT RECOGNITION · VALORANT UI + USER LEARNING</div>
+        <div class="eyebrow">AGENT RECOGNITION · OFFICIAL UI REFERENCE + USER LEARNING</div>
         <div class="vision-agent-row">
             <div>
                 <div class="muted">판별된 에이전트</div>
@@ -82,7 +82,7 @@
                     <button id="trainAgentBtn" type="button">정답으로 학습</button>
                 </div>
                 <div id="agentTrainingStatus" class="vision-training-status">
-                    VALORANT 스킬 UI 기준 데이터와 사용자 정정 학습을 함께 사용합니다.
+                    확대된 하단 HUD와 공식 스킬 아이콘을 우선 대조하고, 사용자 정정 학습을 보조로 사용합니다.
                 </div>
             </div>
         </div>
@@ -117,7 +117,7 @@
 
     <section class="panel">
         <h2>주요 장면</h2>
-        <p class="muted">타임스탬프를 누르면 해당 장면으로 이동합니다. 주요 장면의 킬/데스는 전체 킬로그 스택과 아래로 밀린 행까지 확대해 다시 검증합니다.</p>
+        <p class="muted">타임스탬프를 누르면 해당 장면으로 이동합니다. 요원·스킬은 확대 하단 HUD와 공식 아이콘으로, 킬/데스는 실제 Killfeed 초상화와 전체 세로 킬로그로 다시 검증합니다.</p>
         <div id="events"></div>
     </section>
 
@@ -175,5 +175,5 @@
 
 {% block scripts %}
 <script src="/static/app.js?v=20260913-vision2"></script>
-<script src="/static/combat_verify.js?v=20260913-combat4"></script>
+<script src="/static/combat_verify.js?v=20260913-hud1"></script>
 {% endblock %}
