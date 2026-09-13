@@ -48,11 +48,33 @@
     function snapshotBottomHudCanvas(targetWidth = 1280) {
         const sourceWidth = player.videoWidth || 1280;
         const sourceHeight = player.videoHeight || 720;
-        // Keep the complete bottom-centre ability bar, including charges/cooldowns.
         const sx = Math.floor(sourceWidth * 0.14);
         const sy = Math.floor(sourceHeight * 0.66);
         const sw = Math.max(1, Math.floor(sourceWidth * 0.72));
         const sh = Math.max(1, sourceHeight - sy);
+        const width = targetWidth;
+        const height = Math.max(1, Math.round(sh * (width / sw)));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d", {alpha: false});
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(player, sx, sy, sw, sh, 0, 0, width, height);
+        return canvas;
+    }
+
+    function snapshotRoundRoleCanvas(targetWidth = 1280) {
+        const sourceWidth = player.videoWidth || 1280;
+        const sourceHeight = player.videoHeight || 720;
+
+        // VALORANT exposes attack/defend role icons in the upper-middle game-info
+        // HUD. Crop that area generously so HUD scale and aspect-ratio changes do
+        // not cut the role icon, round timer, score, or planted-Spike indicator.
+        const sx = Math.floor(sourceWidth * 0.22);
+        const sy = 0;
+        const sw = Math.max(1, Math.floor(sourceWidth * 0.56));
+        const sh = Math.max(1, Math.floor(sourceHeight * 0.24));
         const width = targetWidth;
         const height = Math.max(1, Math.round(sh * (width / sw)));
         const canvas = document.createElement("canvas");
@@ -74,13 +96,11 @@
         let sh;
 
         if (mode === "lower-stack") {
-            // Older rows move downward when simultaneous kills are added above.
             sx = Math.floor(sourceWidth * 0.27);
             sy = Math.floor(sourceHeight * 0.08);
             sw = Math.max(1, Math.floor(sourceWidth * 0.73));
             sh = Math.max(1, Math.floor(sourceHeight * 0.76));
         } else {
-            // Full vertical stack: deliberately much taller than the normal feed.
             sx = Math.floor(sourceWidth * 0.27);
             sy = 0;
             sw = Math.max(1, Math.floor(sourceWidth * 0.73));
@@ -113,16 +133,19 @@
     }
 
     function buildFullHudContextSheet(samples) {
-        // Every temporal cell shows BOTH the whole fight and a large bottom-HUD
-        // crop. This lets Gemini compare official ability icons across time.
+        // Each time cell deliberately repeats three views:
+        // 1) whole fight, 2) enlarged upper-middle round-role HUD,
+        // 3) enlarged bottom ability HUD. This avoids asking Gemini to infer
+        // attacker/defender from team colour or killfeed geometry.
         const columns = 2;
         const rows = Math.ceil(samples.length / columns);
         const cellWidth = 520;
-        const fullHeight = 292;
-        const hudHeight = 176;
+        const fullHeight = 260;
+        const roleHeight = 132;
+        const hudHeight = 158;
         const labelHeight = 30;
         const gap = 10;
-        const cellHeight = fullHeight + hudHeight + labelHeight + 8;
+        const cellHeight = fullHeight + roleHeight + hudHeight + labelHeight + 12;
         const sheet = document.createElement("canvas");
         sheet.width = columns * cellWidth + (columns + 1) * gap;
         sheet.height = rows * cellHeight + (rows + 1) * gap;
@@ -142,7 +165,12 @@
             ctx.fillRect(x, y, cellWidth, fullHeight);
             drawContained(ctx, sample.full, x, y, cellWidth, fullHeight);
 
-            const hudY = y + fullHeight + 4;
+            const roleY = y + fullHeight + 4;
+            ctx.fillStyle = "#0b1018";
+            ctx.fillRect(x, roleY, cellWidth, roleHeight);
+            drawContained(ctx, sample.role, x, roleY, cellWidth, roleHeight);
+
+            const hudY = roleY + roleHeight + 4;
             ctx.fillStyle = "#0c1119";
             ctx.fillRect(x, hudY, cellWidth, hudHeight);
             drawContained(ctx, sample.hud, x, hudY, cellWidth, hudHeight);
@@ -150,13 +178,13 @@
             ctx.fillStyle = "#ffffff";
             const sign = sample.offset >= 0 ? "+" : "";
             ctx.fillText(
-                `FULL + ENLARGED ABILITY HUD ${sign}${sample.offset.toFixed(2)}s`,
+                `FULL + ROUND ROLE HUD + ABILITY HUD ${sign}${sample.offset.toFixed(2)}s`,
                 x + 8,
                 hudY + hudHeight + labelHeight / 2
             );
         });
 
-        return sheet.toDataURL("image/jpeg", 0.86);
+        return sheet.toDataURL("image/jpeg", 0.87);
     }
 
     async function captureVerificationFrames(events) {
@@ -179,8 +207,6 @@
             for (let index = 0; index < Math.min(events.length, 6); index += 1) {
                 const event = events[index];
                 const center = timestampToSeconds(event.timestamp);
-                // Dense enough to show HUD state before/after a cast and to keep
-                // killfeed rows visible after simultaneous kills shift them down.
                 const offsets = [-0.55, 0.10, 0.55, 1.15, 1.80];
                 const samples = [];
 
@@ -189,14 +215,13 @@
                     samples.push({
                         offset,
                         full: snapshotFullCanvas(1100),
+                        role: snapshotRoundRoleCanvas(1280),
                         hud: snapshotBottomHudCanvas(1280),
                         killfeedFull: snapshotKillfeedCanvas("full-stack", 1500),
                         killfeedLower: snapshotKillfeedCanvas("lower-stack", 1500)
                     });
                 }
 
-                // A catches the fresh top entry. B is later and deliberately
-                // lower/taller, catching the same row after other kills push it.
                 const killfeedA = canvasToJpeg(samples[1].killfeedFull, 0.92);
                 const killfeedB = canvasToJpeg(samples[3].killfeedLower, 0.92);
                 const fullHudSheet = buildFullHudContextSheet(samples);
@@ -252,8 +277,6 @@
         const events = Array.isArray(data?.events) ? data.events : [];
         const items = Array.isArray(verification?.events) ? verification.events : [];
 
-        // The dedicated high-resolution HUD verifier has priority over the
-        // low-resolution whole-video agent guess when it has useful evidence.
         const verifiedAgent = String(verification?.agent || "").trim();
         const agentConfidence = Math.max(0, Math.min(1, Number(verification?.agent_confidence || 0)));
         if (verification?.unified_hud_verification && verification?.portrait_reference_used) {
@@ -282,6 +305,15 @@
             const event = events[index];
             if (!event) continue;
 
+            const side = ["attacker", "defender"].includes(String(item.side || ""))
+                ? String(item.side)
+                : "unknown";
+            const sideConfidence = Math.max(0, Math.min(1, Number(item.side_confidence || 0)));
+            event.side = side;
+            event.side_confidence = sideConfidence;
+            event.side_evidence = String(item.side_evidence || "");
+            event.side_verified = true;
+
             const confidence = Math.max(0, Math.min(1, Number(item.confidence || 0)));
             event.combat_outcome = item.outcome || "uncertain";
             event.combat_confidence = confidence;
@@ -301,7 +333,6 @@
                 event.ability_name = verifiedAbility;
                 event.ability_confidence = abilityConfidence;
             } else if (!verifiedAbility && abilityConfidence <= 0.35) {
-                // Prefer 'unknown' over preserving a low-confidence hallucinated skill.
                 if (Number(event.ability_confidence || 0) < 0.75) {
                     event.original_ability_name_before_hud_verification = event.ability_name || null;
                     event.ability_name = null;
@@ -309,7 +340,10 @@
                 }
             }
 
-            if (item.replace_text && confidence >= 0.62) {
+            // A side error should be corrected even when the kill/death outcome is
+            // uncertain. Use the strongest independent verification confidence.
+            const correctionConfidence = Math.max(confidence, sideConfidence, abilityConfidence);
+            if (item.replace_text && correctionConfidence >= 0.62) {
                 const correctedObservation = String(item.corrected_observation || "").trim();
                 const correctedFeedback = String(item.corrected_feedback || "").trim();
                 if (correctedObservation) event.observation = correctedObservation;
@@ -331,6 +365,7 @@
         data.combat_verification_model = verification?.model_used || "";
         data.combat_portrait_reference_used = Boolean(verification?.portrait_reference_used);
         data.hud_verification_used = Boolean(verification?.unified_hud_verification);
+        data.side_verification_used = Boolean(verification?.side_verification);
         data.hud_verification_token_usage = verification?.token_usage || {};
         return data;
     }
@@ -346,6 +381,11 @@
             no_combat: "킬/데스 없음",
             uncertain: "전투 결과 불확실"
         };
+        const sideLabels = {
+            attacker: "공격팀",
+            defender: "수비팀",
+            unknown: "진영 불확실"
+        };
 
         boxes.forEach((box, index) => {
             const event = events[index];
@@ -356,6 +396,14 @@
 
             const row = document.createElement("div");
             row.className = "vision-ability-row combat-verification-row";
+
+            if (event.side_verified) {
+                const sideBadge = document.createElement("span");
+                sideBadge.className = "badge";
+                const sc = Math.round(Number(event.side_confidence || 0) * 100);
+                sideBadge.textContent = `진영 · ${sideLabels[event.side] || "진영 불확실"} · ${sc}%`;
+                row.appendChild(sideBadge);
+            }
 
             const badge = document.createElement("span");
             badge.className = "badge";
@@ -388,7 +436,12 @@
 
             const evidence = document.createElement("span");
             evidence.className = "muted";
-            evidence.textContent = event.killfeed_note || event.hud_ability_evidence || event.combat_evidence || "";
+            evidence.textContent = [
+                event.side_evidence,
+                event.killfeed_note,
+                event.hud_ability_evidence,
+                event.combat_evidence
+            ].filter(Boolean).join(" · ");
             row.appendChild(evidence);
 
             const head = box.querySelector(".event-head");
@@ -406,7 +459,7 @@
 
         try {
             if (statusBoxEl) {
-                statusBoxEl.textContent = "공식 요원·스킬 UI와 전체 킬로그를 고해상도로 재검증하는 중...";
+                statusBoxEl.textContent = "상단 공격/수비 HUD와 요원·스킬·킬로그를 고해상도로 재검증하는 중...";
             }
             const verification = await requestCombatVerification(data);
             if (!verification?.verified) {
@@ -433,7 +486,7 @@
             }
 
             if (statusBoxEl) {
-                const base = `분석 완료 · ${data.model_used || "Gemini"} · 요원/스킬/킬 HUD 재검증 완료`;
+                const base = `분석 완료 · ${data.model_used || "Gemini"} · 공격/수비+요원/스킬/킬 HUD 재검증 완료`;
                 statusBoxEl.textContent = data.usage?.premium ? `${base} · PREMIUM` : base;
             }
         } catch (error) {
