@@ -49,7 +49,6 @@ class DirectUploadStartRequest(BaseModel):
 
 class DirectAnalyzeRequest(BaseModel):
     ticket_id: str = Field(min_length=12, max_length=100)
-    file_name: str = Field(min_length=7, max_length=220)
 
 
 def _client_ip(request: Request) -> str:
@@ -122,7 +121,13 @@ def _classify_analysis_error(exc: Exception) -> tuple[int, str, str]:
     return 500, "ANALYSIS_FAILED", "분석 중 오류가 발생했습니다. 개인 무료 분석 횟수는 차감되지 않았습니다."
 
 
-async def _register_ticket(user_id: str, filename: str, size_bytes: int, mime_type: str) -> str:
+async def _register_ticket(
+    user_id: str,
+    filename: str,
+    size_bytes: int,
+    mime_type: str,
+    file_name: str,
+) -> str:
     now = time.time()
     ticket_id = f"du_{uuid.uuid4().hex}"
     async with _ticket_guard:
@@ -141,6 +146,7 @@ async def _register_ticket(user_id: str, filename: str, size_bytes: int, mime_ty
             "filename": filename,
             "size_bytes": int(size_bytes),
             "mime_type": mime_type,
+            "file_name": file_name,
             "expires_at": now + max(300, DIRECT_UPLOAD_TICKET_TTL),
         }
         _user_ticket[user_id] = ticket_id
@@ -233,6 +239,7 @@ def build_direct_upload_router(get_auth_context, attach_refreshed_session, publi
                 payload.filename,
                 payload.size_bytes,
                 mime_type,
+                str(session["file_name"]),
             )
             response = JSONResponse({
                 "ok": True,
@@ -299,7 +306,7 @@ def build_direct_upload_router(get_auth_context, attach_refreshed_session, publi
             try:
                 result = await asyncio.to_thread(
                     analyze_direct_gemini_file,
-                    payload.file_name,
+                    str(ticket["file_name"]),
                     expected_size_bytes=int(ticket["size_bytes"]),
                     expected_mime_type=str(ticket["mime_type"]),
                 )
