@@ -25,6 +25,24 @@ class CombatVerificationItem(BaseModel):
     evidence: str = Field(description="전투 결과 근거를 짧은 한국어 한 문장으로 작성")
     killfeed_visible: bool
     killfeed_supports_pov_kill: bool
+    killfeed_attacker_agent: str = Field(
+        default="",
+        description="POV kill 판단에 사용한 정확히 같은 킬로그 행의 공격자 요원 영문명. 읽지 못하면 빈 문자열",
+    )
+    killfeed_victim_agent: str = Field(
+        default="",
+        description="POV kill 판단에 사용한 정확히 같은 킬로그 행의 피해자 요원 영문명. 읽지 못하면 빈 문자열",
+    )
+    pov_killfeed_position: Literal["attacker", "victim", "assist", "not_found", "uncertain"] = Field(
+        default="uncertain",
+        description="POV 요원이 해당 킬로그 행에서 실제로 위치한 역할",
+    )
+    killfeed_row_confidence: float = Field(
+        default=0.0,
+        ge=0,
+        le=1,
+        description="공격자와 피해자를 같은 행에서 정확히 읽었다는 신뢰도",
+    )
     killfeed_note: str = Field(description="킬로그에서 실제로 읽은 내용을 짧게 작성")
     ability_name: str | None = Field(default=None, description="이 장면에서 실제 사용이 확인된 최종 요원의 스킬 영문명. 불확실하면 null")
     ability_confidence: float = Field(default=0.0, ge=0, le=1)
@@ -82,15 +100,26 @@ PROMPT = """
 - 실제 사용이 확실하지 않으면 ability_name=null, ability_confidence를 낮게 두세요.
 - 다른 요원의 스킬 이름은 절대로 반환하지 마세요.
 
-[킬로그 판정]
+[킬로그 판정 — 최우선 안전 규칙]
 - KILLFEED A는 우측 킬로그 전체 세로 스택을 넓게 보여줍니다.
 - KILLFEED B는 다른 킬 때문에 아래로 밀린 오래된 행을 놓치지 않도록 아래쪽 스택을 더 크게 보여줍니다.
 - 동시에 여러 킬이 나면 최신 킬이 위에 추가되고 기존 행이 아래로 밀릴 수 있으므로 모든 행을 위에서 아래까지 각각 읽으세요.
-- 공격자/피해자 killfeedPortrait를 UI REFERENCE SHEET의 실제 killfeedPortrait와 대조하세요.
-- POV 요원이 공격자 쪽에 명확히 있을 때만 POV kill로 확정하세요.
-- 어시스트 아이콘을 공격자 아이콘으로 착각하지 마세요.
-- 킬로그가 화면 아래쪽으로 밀렸더라도 B 이미지에서 다시 찾아보세요.
-- 단순 명중이나 적이 사라졌다는 이유만으로 kill로 추측하지 마세요.
+- 각 킬로그 행을 독립적으로 읽고, 한 행의 공격자 초상화와 피해자 초상화를 서로 다른 행과 절대로 섞지 마세요.
+- POV의 본인 킬(outcome="kill")은 아래 조건을 모두 만족할 때만 허용합니다.
+  1) 최종 POV 요원이 Unknown이 아니다.
+  2) 정확히 같은 킬로그 행에서 POV 요원의 killfeedPortrait가 공격자 위치에 있다.
+  3) 그 같은 행에서 별도의 피해자 killfeedPortrait를 실제로 읽을 수 있다.
+  4) 공격자와 피해자 위치 관계가 한 행의 정상적인 킬로그 구조와 일치한다.
+  5) killfeed_row_confidence가 충분히 높다.
+- 이 조건을 만족할 때만 pov_killfeed_position="attacker", killfeed_supports_pov_kill=true로 하세요.
+- POV 요원이 피해자 위치에 있으면 pov_killfeed_position="victim"이며 절대로 본인 킬이 아닙니다.
+- POV 요원이 작은 어시스트 아이콘에만 있으면 pov_killfeed_position="assist"이며 절대로 본인 킬이 아닙니다.
+- POV 요원 초상화가 킬로그의 다른 행 어딘가에 있다는 사실만으로 본인 킬로 판정하지 마세요.
+- 공격자 요원을 못 읽었거나 피해자 요원을 못 읽었거나 같은 행인지 불확실하면 killfeed_supports_pov_kill=false, outcome="uncertain"을 우선하세요.
+- 킬로그에 팀원의 킬이 보이고 화면 중앙에서 POV가 적을 쏘고 있어도, POV가 공격자인 같은 행을 확인하지 못하면 본인 킬이 아닙니다.
+- 화면 중앙의 적 사라짐, 명중 이펙트, 교전 우세, 크로스헤어 반응만으로 kill을 확정하지 마세요.
+- 공격팀/수비팀(side) 정보는 킬로그의 공격자/피해자 식별과 별개입니다. attacker 진영이라고 킬로그 attacker 위치라는 뜻이 아닙니다.
+- killfeed_attacker_agent와 killfeed_victim_agent에는 판정에 사용한 바로 그 한 행의 요원명을 기록하세요. 읽지 못하면 빈 문자열로 두세요.
 
 [사망 판정]
 - POV death는 Combat Report, 관전자 전환, 리스폰/사망 화면 등 직접 증거가 있어야 합니다.
@@ -100,9 +129,11 @@ PROMPT = """
 [출력]
 - 제공된 모든 이벤트를 event_index 그대로 정확히 한 번씩 반환하세요.
 - side/side_confidence/side_evidence는 모든 이벤트에 반드시 작성하세요.
+- 킬로그가 보이는 이벤트는 killfeed_attacker_agent, killfeed_victim_agent, pov_killfeed_position, killfeed_row_confidence를 반드시 채우세요.
 - 기존 observation/feedback이 실제 화면과 충돌할 때만 replace_text=true로 수정하세요.
+- 기존 문장이 POV의 킬을 주장하지만 위의 동일 행 공격자 조건을 만족하지 못하면 replace_text=true로 하고 본인 킬 주장을 제거하세요.
 - 공격/수비 전제가 틀린 경우에는 전투 결과가 맞더라도 replace_text=true로 수정하세요.
-- 전체 summary에 공격/수비를 잘못 전제한 표현이 있으면 replace_summary=true로 고치세요.
+- 전체 summary에 공격/수비 또는 POV 킬을 잘못 전제한 표현이 있으면 replace_summary=true로 고치세요.
 - evidence 문장은 짧게 유지하세요.
 - 확실하지 않은 내용은 unknown/uncertain/null로 두는 것이 잘못된 단정보다 낫습니다.
 """
@@ -138,6 +169,56 @@ def _usage_metadata(response) -> dict:
         "thought_tokens": int(getattr(usage, "thoughts_token_count", 0) or 0),
         "total_tokens": int(getattr(usage, "total_token_count", 0) or 0),
     }
+
+
+def _agent_key(value: str) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
+def _apply_strict_kill_guard(parsed: dict) -> tuple[list[dict], int]:
+    """Do not trust a model-level 'kill' unless same-row attacker evidence exists."""
+    final_agent = str(parsed.get("agent") or "Unknown").strip()
+    final_key = _agent_key(final_agent)
+    agent_known = bool(final_key and final_key != "unknown")
+    guarded = 0
+    output: list[dict] = []
+
+    for raw_item in parsed.get("events", []) or []:
+        item = dict(raw_item)
+        position = str(item.get("pov_killfeed_position") or "uncertain")
+        attacker = str(item.get("killfeed_attacker_agent") or "").strip()
+        victim = str(item.get("killfeed_victim_agent") or "").strip()
+        row_confidence = float(item.get("killfeed_row_confidence") or 0.0)
+        killfeed_visible = bool(item.get("killfeed_visible"))
+
+        strict_support = (
+            agent_known
+            and killfeed_visible
+            and position == "attacker"
+            and _agent_key(attacker) == final_key
+            and bool(victim)
+            and _agent_key(victim) != final_key
+            and row_confidence >= 0.75
+        )
+
+        item["killfeed_supports_pov_kill"] = bool(strict_support)
+        item["strict_pov_kill_verified"] = bool(strict_support)
+
+        if str(item.get("outcome") or "") == "kill" and not strict_support:
+            guarded += 1
+            item["outcome"] = "uncertain"
+            item["confidence"] = min(float(item.get("confidence") or 0.0), 0.55)
+            item["replace_text"] = True
+            item["evidence"] = "같은 킬로그 행에서 POV가 공격자인 직접 근거가 부족해 본인 킬로 인정하지 않음."
+            item["corrected_observation"] = "킬로그에서 POV 플레이어가 공격자인 동일 행을 확인하지 못해 본인 처치로 확정하지 않습니다."
+            item["corrected_feedback"] = "처치 여부는 불확실로 두고 포지셔닝·에임·스킬 사용처럼 화면에서 직접 확인되는 요소만 평가합니다."
+            note = str(item.get("killfeed_note") or "").strip()
+            guard_note = "서버 동일행 가드: POV 공격자+피해자 동시 확인 실패"
+            item["killfeed_note"] = f"{note} · {guard_note}" if note else guard_note
+
+        output.append(item)
+
+    return output, guarded
 
 
 def verify_combat_events(events: list[dict], summary: str = "", player_agent: str = "") -> dict:
@@ -205,7 +286,7 @@ def verify_combat_events(events: list[dict], summary: str = "", player_agent: st
                     response_mime_type="application/json",
                     response_schema=CombatVerificationResponse,
                     temperature=0.0,
-                    max_output_tokens=1900,
+                    max_output_tokens=2100,
                     media_resolution=types.MediaResolution.MEDIA_RESOLUTION_HIGH,
                     thinking_config=types.ThinkingConfig(thinking_level="minimal"),
                     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
@@ -215,8 +296,9 @@ def verify_combat_events(events: list[dict], summary: str = "", player_agent: st
                 raise RuntimeError(f"{model} empty response")
 
             parsed = CombatVerificationResponse.model_validate_json(response.text).model_dump()
+            guarded_events, guarded_count = _apply_strict_kill_guard(parsed)
             filtered = [
-                item for item in parsed.get("events", [])
+                item for item in guarded_events
                 if int(item.get("event_index", -1)) in requested_indices
             ]
             usage = _usage_metadata(response)
@@ -228,6 +310,8 @@ def verify_combat_events(events: list[dict], summary: str = "", player_agent: st
                     f"thinking={usage.get('thought_tokens', 0)} · "
                     f"total={usage.get('total_tokens', 0)}"
                 )
+            if guarded_count:
+                print(f"[HUDVerifier] strict POV kill guard downgraded {guarded_count} false/weak kill claim(s)")
 
             return {
                 "events": filtered,
@@ -247,6 +331,8 @@ def verify_combat_events(events: list[dict], summary: str = "", player_agent: st
                 "token_usage": usage,
                 "unified_hud_verification": True,
                 "side_verification": True,
+                "strict_pov_kill_guard": True,
+                "strict_pov_kill_guard_downgraded": guarded_count,
             }
         except (errors.APIError, ValueError, RuntimeError) as exc:
             text = f"{model}: {type(exc).__name__}: {exc}"
