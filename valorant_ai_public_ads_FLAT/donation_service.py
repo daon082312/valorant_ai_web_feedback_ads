@@ -18,7 +18,6 @@ TOSS_SECRET_KEY = os.getenv("TOSS_SECRET_KEY", "").strip()
 TOSS_API_BASE = "https://api.tosspayments.com"
 
 DONATION_MIN_AMOUNT = int(os.getenv("DONATION_MIN_AMOUNT", "100"))
-DONATION_MAX_AMOUNT = int(os.getenv("DONATION_MAX_AMOUNT", "500000"))
 DONATION_ORDER_NAME = os.getenv("DONATION_ORDER_NAME", "VALORANT AI Coach 후원").strip() or "VALORANT AI Coach 후원"
 
 _client: Client | None = None
@@ -77,9 +76,9 @@ def _toss_error(response: httpx.Response) -> RuntimeError:
 
 def validate_donation_amount(amount: int) -> int:
     amount = int(amount)
-    if amount < DONATION_MIN_AMOUNT or amount > DONATION_MAX_AMOUNT:
+    if amount < DONATION_MIN_AMOUNT:
         raise ValueError(
-            f"후원 금액은 {DONATION_MIN_AMOUNT:,}원 이상 {DONATION_MAX_AMOUNT:,}원 이하로 입력해 주세요."
+            f"후원 금액은 {DONATION_MIN_AMOUNT:,}원 이상으로 입력해 주세요."
         )
     return amount
 
