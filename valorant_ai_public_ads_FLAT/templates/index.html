@@ -21,7 +21,7 @@
     <label class="drop-zone">
         <input id="videoInput" type="file" accept="video/*">
         <span class="drop-title">VALORANT 클립 선택</span>
-        <span class="muted">MP4 권장 · 분석이 끝나면 서버 임시 파일은 삭제됩니다.</span>
+        <span class="muted">MP4 권장 · 영상은 가능하면 브라우저에서 Gemini로 직접 전송되어 Render 서버를 거치지 않습니다.</span>
     </label>
 
     <div id="fileInfo" class="muted" style="margin-top:12px;">선택된 영상 없음</div>
@@ -175,5 +175,6 @@
 
 {% block scripts %}
 <script src="/static/app.js?v=20260913-vision2"></script>
+<script src="/static/direct_upload.js?v=20260913-direct1"></script>
 <script src="/static/combat_verify.js?v=20260913-side2"></script>
 {% endblock %}
