@@ -67,6 +67,10 @@
     function snapshotRoundRoleCanvas(targetWidth = 1280) {
         const sourceWidth = player.videoWidth || 1280;
         const sourceHeight = player.videoHeight || 720;
+
+        // VALORANT exposes attack/defend role icons in the upper-middle game-info
+        // HUD. Crop that area generously so HUD scale and aspect-ratio changes do
+        // not cut the role icon, round timer, score, or planted-Spike indicator.
         const sx = Math.floor(sourceWidth * 0.22);
         const sy = 0;
         const sw = Math.max(1, Math.floor(sourceWidth * 0.56));
@@ -128,42 +132,11 @@
         ctx.drawImage(source, dx, dy, drawWidth, drawHeight);
     }
 
-    function cheatCandidateScore(event) {
-        const text = `${event?.observation || ""} ${event?.feedback || ""}`.toLowerCase();
-        let score = 0;
-        if (String(event?.category || "") === "aim") score += 4;
-        if (["high", "medium"].includes(String(event?.severity || ""))) score += 1;
-        if (/(킬|처치|헤드|에임|교전|사격|aim|kill|head|flick|track|spray|duel)/i.test(text)) score += 3;
-        if (Number(event?.confidence || 0) >= 0.7) score += 1;
-        return score;
-    }
-
-    function selectDenseAimEventIndices(events) {
-        const ranked = events.map((event, index) => ({index, score: cheatCandidateScore(event)}));
-        ranked.sort((a, b) => b.score - a.score || a.index - b.index);
-        const chosen = ranked.filter(item => item.score > 0).slice(0, 3).map(item => item.index);
-        const minimum = Math.min(2, events.length);
-        for (const item of ranked) {
-            if (chosen.length >= minimum) break;
-            if (!chosen.includes(item.index)) chosen.push(item.index);
-        }
-        return new Set(chosen.slice(0, 3));
-    }
-
-    async function captureDenseAimSamples(center) {
-        const offsets = [-0.42, -0.30, -0.18, -0.06, 0.06, 0.18, 0.30, 0.42];
-        const samples = [];
-        for (const offset of offsets) {
-            await seekTo(center + offset);
-            samples.push({
-                offset,
-                full: snapshotFullCanvas(900)
-            });
-        }
-        return samples;
-    }
-
-    function buildFullHudContextSheet(samples, aimSamples = []) {
+    function buildFullHudContextSheet(samples) {
+        // Each time cell deliberately repeats three views:
+        // 1) whole fight, 2) enlarged upper-middle round-role HUD,
+        // 3) enlarged bottom ability HUD. This avoids asking Gemini to infer
+        // attacker/defender from team colour or killfeed geometry.
         const columns = 2;
         const rows = Math.ceil(samples.length / columns);
         const cellWidth = 520;
@@ -173,20 +146,9 @@
         const labelHeight = 30;
         const gap = 10;
         const cellHeight = fullHeight + roleHeight + hudHeight + labelHeight + 12;
-
-        const aimColumns = 4;
-        const aimRows = aimSamples.length ? Math.ceil(aimSamples.length / aimColumns) : 0;
-        const aimCellWidth = 250;
-        const aimImageHeight = 141;
-        const aimLabelHeight = 24;
-        const aimHeaderHeight = aimSamples.length ? 34 : 0;
-        const aimSectionHeight = aimSamples.length
-            ? aimHeaderHeight + aimRows * (aimImageHeight + aimLabelHeight + gap) + gap
-            : 0;
-
         const sheet = document.createElement("canvas");
         sheet.width = columns * cellWidth + (columns + 1) * gap;
-        sheet.height = rows * cellHeight + (rows + 1) * gap + aimSectionHeight;
+        sheet.height = rows * cellHeight + (rows + 1) * gap;
         const ctx = sheet.getContext("2d", {alpha: false});
         ctx.fillStyle = "#07090d";
         ctx.fillRect(0, 0, sheet.width, sheet.height);
@@ -222,34 +184,7 @@
             );
         });
 
-        if (aimSamples.length) {
-            const sectionY = rows * cellHeight + (rows + 1) * gap;
-            ctx.fillStyle = "#151b26";
-            ctx.fillRect(gap, sectionY, sheet.width - gap * 2, aimHeaderHeight - 4);
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 17px sans-serif";
-            ctx.fillText(
-                "AIM MOTION STRIP · chronological left→right, top→bottom · dense frames",
-                gap + 10,
-                sectionY + (aimHeaderHeight - 4) / 2
-            );
-            ctx.font = "bold 13px sans-serif";
-
-            aimSamples.forEach((sample, index) => {
-                const col = index % aimColumns;
-                const row = Math.floor(index / aimColumns);
-                const x = gap + col * (aimCellWidth + gap);
-                const y = sectionY + aimHeaderHeight + row * (aimImageHeight + aimLabelHeight + gap);
-                ctx.fillStyle = "#0d121b";
-                ctx.fillRect(x, y, aimCellWidth, aimImageHeight);
-                drawContained(ctx, sample.full, x, y, aimCellWidth, aimImageHeight);
-                ctx.fillStyle = "#ffffff";
-                const sign = sample.offset >= 0 ? "+" : "";
-                ctx.fillText(`${sign}${sample.offset.toFixed(2)}s`, x + 6, y + aimImageHeight + aimLabelHeight / 2);
-            });
-        }
-
-        return sheet.toDataURL("image/jpeg", aimSamples.length ? 0.84 : 0.87);
+        return sheet.toDataURL("image/jpeg", 0.87);
     }
 
     async function captureVerificationFrames(events) {
@@ -268,7 +203,6 @@
         player.pause();
 
         const payloadEvents = [];
-        const denseAimIndices = selectDenseAimEventIndices(events);
         try {
             for (let index = 0; index < Math.min(events.length, 6); index += 1) {
                 const event = events[index];
@@ -288,21 +222,15 @@
                     });
                 }
 
-                let aimSamples = [];
-                if (denseAimIndices.has(index)) {
-                    aimSamples = await captureDenseAimSamples(center);
-                }
-
                 const killfeedA = canvasToJpeg(samples[1].killfeedFull, 0.92);
                 const killfeedB = canvasToJpeg(samples[3].killfeedLower, 0.92);
-                const fullHudSheet = buildFullHudContextSheet(samples, aimSamples);
+                const fullHudSheet = buildFullHudContextSheet(samples);
 
                 payloadEvents.push({
                     event_index: index,
                     timestamp: String(event.timestamp || ""),
                     observation: String(event.observation || ""),
                     feedback: String(event.feedback || ""),
-                    dense_motion_strip: aimSamples.length > 0,
                     frames: [killfeedA, killfeedB, fullHudSheet]
                 });
             }
@@ -412,6 +340,8 @@
                 }
             }
 
+            // A side error should be corrected even when the kill/death outcome is
+            // uncertain. Use the strongest independent verification confidence.
             const correctionConfidence = Math.max(confidence, sideConfidence, abilityConfidence);
             if (item.replace_text && correctionConfidence >= 0.62) {
                 const correctedObservation = String(item.corrected_observation || "").trim();
@@ -436,8 +366,6 @@
         data.combat_portrait_reference_used = Boolean(verification?.portrait_reference_used);
         data.hud_verification_used = Boolean(verification?.unified_hud_verification);
         data.side_verification_used = Boolean(verification?.side_verification);
-        data.cheat_verification_used = Boolean(verification?.cheat_suspicion_verification);
-        data.cheat_assessment = verification?.cheat_assessment || null;
         data.hud_verification_token_usage = verification?.token_usage || {};
         return data;
     }
@@ -525,83 +453,13 @@
         });
     }
 
-    function renderCheatAssessment(data) {
-        const badge = document.getElementById("cheatAssessmentBadge");
-        const score = document.getElementById("cheatAssessmentScore");
-        const summary = document.getElementById("cheatAssessmentSummary");
-        const indicators = document.getElementById("cheatIndicators");
-        const evidence = document.getElementById("cheatEvidence");
-        const alternatives = document.getElementById("cheatAlternatives");
-        const disclaimer = document.getElementById("cheatDisclaimer");
-        if (!badge || !score || !summary || !indicators || !evidence || !alternatives || !disclaimer) return;
-
-        const assessment = data?.cheat_assessment;
-        if (!assessment) {
-            badge.textContent = "검증 대기";
-            score.textContent = "연속 에임 프레임을 아직 검증하지 않았습니다.";
-            summary.textContent = "";
-            indicators.innerHTML = "";
-            evidence.innerHTML = "";
-            alternatives.innerHTML = "";
-            disclaimer.textContent = "영상만으로 치트 사용을 확정할 수 없습니다.";
-            return;
-        }
-
-        const ratingLabels = {
-            no_clear_evidence: "뚜렷한 이상 근거 없음",
-            insufficient_evidence: "판정 근거 부족",
-            suspicious: "의심 패턴 있음",
-            strongly_suspicious: "강한 의심 패턴"
-        };
-        const indicatorLabels = {
-            aim_snap: "반복적인 비정상 에임 스냅",
-            wall_tracking: "비가시 표적 추적 의심",
-            information_anomaly: "정보 없이 반복되는 사전 대응",
-            unnatural_target_switching: "비정상적으로 기계적인 타깃 전환",
-            trigger_like_timing: "비정상적으로 일관된 발사 타이밍",
-            none: "뚜렷한 이상 신호 없음"
-        };
-
-        const confidence = Math.round(Math.max(0, Math.min(1, Number(assessment.confidence || 0))) * 100);
-        badge.textContent = `${ratingLabels[assessment.rating] || assessment.rating} · 신뢰도 ${confidence}%`;
-        score.textContent = `핵 의심도 점수 ${Number(assessment.suspicion_score || 0)} / 100 · 확률이 아닙니다.`;
-        summary.textContent = String(assessment.summary || "");
-
-        indicators.innerHTML = "";
-        for (const item of Array.isArray(assessment.indicators) ? assessment.indicators : []) {
-            const li = document.createElement("li");
-            li.textContent = indicatorLabels[item] || String(item);
-            indicators.appendChild(li);
-        }
-
-        evidence.innerHTML = "";
-        for (const item of Array.isArray(assessment.evidence) ? assessment.evidence : []) {
-            const li = document.createElement("li");
-            li.textContent = String(item);
-            evidence.appendChild(li);
-        }
-        if (!evidence.children.length) {
-            const li = document.createElement("li");
-            li.textContent = "반복되는 직접 이상 근거가 충분하지 않습니다.";
-            evidence.appendChild(li);
-        }
-
-        alternatives.innerHTML = "";
-        for (const item of Array.isArray(assessment.benign_explanations) ? assessment.benign_explanations : []) {
-            const li = document.createElement("li");
-            li.textContent = String(item);
-            alternatives.appendChild(li);
-        }
-        disclaimer.textContent = String(assessment.disclaimer || "영상만으로 치트 사용을 확정할 수 없습니다.");
-    }
-
     async function verifyAfterRender(data) {
         if (!data || data.combat_verification_attempted) return;
         data.combat_verification_attempted = true;
 
         try {
             if (statusBoxEl) {
-                statusBoxEl.textContent = "공격/수비·요원·스킬·킬로그와 연속 에임 프레임을 고해상도로 재검증하는 중...";
+                statusBoxEl.textContent = "상단 공격/수비 HUD와 요원·스킬·킬로그를 고해상도로 재검증하는 중...";
             }
             const verification = await requestCombatVerification(data);
             if (!verification?.verified) {
@@ -622,14 +480,13 @@
 
             originalRenderResult(data);
             decorateCombatRows(data);
-            renderCheatAssessment(data);
 
             if (typeof saveAnalysisHistory === "function") {
                 await saveAnalysisHistory(data, selectedFile?.name || "영상");
             }
 
             if (statusBoxEl) {
-                const base = `분석 완료 · ${data.model_used || "Gemini"} · HUD/전투/핵 의심도 재검증 완료`;
+                const base = `분석 완료 · ${data.model_used || "Gemini"} · 공격/수비+요원/스킬/킬 HUD 재검증 완료`;
                 statusBoxEl.textContent = data.usage?.premium ? `${base} · PREMIUM` : base;
             }
         } catch (error) {
@@ -642,7 +499,6 @@
     renderResult = function patchedRenderResult(data) {
         originalRenderResult(data);
         decorateCombatRows(data);
-        renderCheatAssessment(data);
         verifyAfterRender(data);
     };
 })();
