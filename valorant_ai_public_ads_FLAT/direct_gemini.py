@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 
 import httpx
@@ -25,7 +26,7 @@ def _api_key() -> str:
 
 
 def start_direct_video_upload(filename: str, size_bytes: int, mime_type: str) -> dict:
-    """Create a Gemini resumable upload session without proxying the video bytes."""
+    """Create a Gemini resumable upload session without proxying video bytes."""
     api_key = _api_key()
     clean_name = Path(str(filename or "valorant-clip")).name[:160] or "valorant-clip"
     size_bytes = int(size_bytes)
@@ -35,6 +36,11 @@ def start_direct_video_upload(filename: str, size_bytes: int, mime_type: str) ->
         raise ValueError("영상 크기가 올바르지 않습니다.")
     if not mime_type.startswith("video/"):
         raise ValueError("영상 MIME 형식이 올바르지 않습니다.")
+
+    # Gemini allows callers to provide the immutable File resource ID on create.
+    # Keeping it server-generated binds the upload ticket to exactly one file and
+    # means the browser does not need to trust/forward a file ID from Google.
+    file_name = f"files/vai-{uuid.uuid4().hex}"
 
     headers = {
         "x-goog-api-key": api_key,
@@ -49,7 +55,12 @@ def start_direct_video_upload(filename: str, size_bytes: int, mime_type: str) ->
         response = client.post(
             GEMINI_UPLOAD_START_URL,
             headers=headers,
-            json={"file": {"display_name": clean_name}},
+            json={
+                "file": {
+                    "name": file_name,
+                    "display_name": clean_name,
+                }
+            },
         )
 
     if response.status_code >= 400:
@@ -64,6 +75,7 @@ def start_direct_video_upload(filename: str, size_bytes: int, mime_type: str) ->
 
     return {
         "upload_url": upload_url,
+        "file_name": file_name,
         "mime_type": mime_type,
         "size_bytes": size_bytes,
     }
@@ -80,7 +92,7 @@ def analyze_direct_gemini_file(
     api_key = _api_key()
     clean_name = str(file_name or "").strip()
     if (
-        not clean_name.startswith("files/")
+        not clean_name.startswith("files/vai-")
         or len(clean_name) > 220
         or "?" in clean_name
         or "#" in clean_name
@@ -98,6 +110,10 @@ def analyze_direct_gemini_file(
             text = str(exc)
             status_code, detail = _safe_failure_detail([text])
             raise HTTPException(status_code=status_code, detail=detail) from exc
+
+        actual_name = str(getattr(uploaded, "name", "") or "").strip()
+        if actual_name and actual_name != clean_name:
+            raise ValueError("업로드된 Gemini 파일 ID 검증에 실패했습니다.")
 
         actual_mime = str(getattr(uploaded, "mime_type", "") or "").strip().lower()
         if actual_mime and not actual_mime.startswith("video/"):
