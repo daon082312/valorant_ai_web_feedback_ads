@@ -11,7 +11,6 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, ValidationError
 
 from donation_service import (
-    DONATION_MAX_AMOUNT,
     DONATION_MIN_AMOUNT,
     DONATION_ORDER_NAME,
     TOSS_CLIENT_KEY,
@@ -26,7 +25,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
 class DonationIntentRequest(BaseModel):
-    amount: int = Field(ge=DONATION_MIN_AMOUNT, le=DONATION_MAX_AMOUNT)
+    amount: int = Field(ge=DONATION_MIN_AMOUNT)
 
 
 def build_donation_router(public_base_url: str) -> APIRouter:
@@ -54,7 +53,6 @@ def build_donation_router(public_base_url: str) -> APIRouter:
                 "current_user_email": "",
                 "donation_configured": donation_is_configured(),
                 "donation_min_amount": DONATION_MIN_AMOUNT,
-                "donation_max_amount": DONATION_MAX_AMOUNT,
             },
         )
 
@@ -70,10 +68,7 @@ def build_donation_router(public_base_url: str) -> APIRouter:
         except (ValidationError, ValueError, TypeError):
             return JSONResponse(
                 {
-                    "detail": (
-                        f"후원 금액은 {DONATION_MIN_AMOUNT:,}원 이상 "
-                        f"{DONATION_MAX_AMOUNT:,}원 이하로 입력해 주세요."
-                    )
+                    "detail": f"후원 금액은 {DONATION_MIN_AMOUNT:,}원 이상으로 입력해 주세요."
                 },
                 status_code=400,
             )
