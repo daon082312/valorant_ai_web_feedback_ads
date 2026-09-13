@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+
+{% block title %}후원 · VALORANT AI Coach{% endblock %}
+{% block description %}VALORANT AI Coach 개발과 서버 운영을 일회성 후원으로 지원할 수 있습니다.{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="/static/donate.css?v=20260913-1">
+{% endblock %}
+
+{% block content %}
+<section class="donate-hero">
+    <div class="eyebrow">SUPPORT VALORANT AI COACH</div>
+    <h1>서비스 개발을<br>후원해 주세요.</h1>
+    <p class="subtitle">
+        후원금은 AI 분석 API, 서버 운영, 정확도 개선과 새 기능 개발에 사용됩니다.
+        후원은 일회성 결제이며 자동결제로 이어지지 않습니다.
+    </p>
+</section>
+
+{% if request.query_params.get('donation') == 'success' %}
+<div class="donate-message donate-message-success">
+    후원이 완료되었습니다.{% if request.query_params.get('amount') %} {{ request.query_params.get('amount') }}원을 후원해 주셨습니다.{% endif %}
+</div>
+{% elif request.query_params.get('donation') == 'failed' %}
+<div class="donate-message donate-message-error">
+    후원 결제가 완료되지 않았습니다. 결제수단을 확인한 뒤 다시 시도해 주세요.
+</div>
+{% elif request.query_params.get('donation') == 'setup_error' %}
+<div class="donate-message donate-message-error">
+    후원 결제 설정을 확인할 수 없습니다.
+</div>
+{% endif %}
+
+<section class="donate-layout">
+    <article class="donate-card">
+        <div class="donate-card-heading">
+            <div>
+                <div class="premium-plan-label">ONE-TIME SUPPORT</div>
+                <h2>후원 금액 선택</h2>
+            </div>
+            <div id="selectedAmount" class="donate-selected-amount">5,000원</div>
+        </div>
+
+        <div class="donate-presets" role="group" aria-label="후원 금액 선택">
+            <button type="button" class="donate-preset" data-amount="1000">1,000원</button>
+            <button type="button" class="donate-preset" data-amount="3000">3,000원</button>
+            <button type="button" class="donate-preset selected" data-amount="5000">5,000원</button>
+            <button type="button" class="donate-preset" data-amount="10000">10,000원</button>
+            <button type="button" class="donate-preset" data-amount="30000">30,000원</button>
+        </div>
+
+        <label class="donate-custom-label" for="customDonationAmount">직접 입력</label>
+        <div class="donate-custom-row">
+            <input
+                id="customDonationAmount"
+                type="number"
+                inputmode="numeric"
+                min="{{ donation_min_amount }}"
+                max="{{ donation_max_amount }}"
+                step="1000"
+                placeholder="예: 20000"
+            >
+            <span>원</span>
+        </div>
+        <div class="donate-range muted">
+            {{ "{:,}".format(donation_min_amount) }}원 ~ {{ "{:,}".format(donation_max_amount) }}원
+        </div>
+
+        {% if donation_configured %}
+        <button id="donateBtn" class="donate-submit" type="button">5,000원 후원하기</button>
+        {% else %}
+        <button class="donate-submit" type="button" disabled>후원 결제 준비 중</button>
+        <div class="donate-error">Toss Payments 또는 Supabase 후원 설정이 아직 완료되지 않았습니다.</div>
+        {% endif %}
+        <div id="donateError" class="donate-error"></div>
+    </article>
+
+    <aside class="donate-info-card">
+        <div class="eyebrow">HOW IT WORKS</div>
+        <h2>일회성 후원</h2>
+        <ul>
+            <li>선택한 금액만 한 번 결제됩니다.</li>
+            <li>Premium 정기결제와 별개의 결제입니다.</li>
+            <li>후원만으로 Premium 권한이 자동 부여되지는 않습니다.</li>
+            <li>결제 정보는 토스페이먼츠에서 처리합니다.</li>
+        </ul>
+        <p class="muted donate-legal-note">
+            이 후원은 서비스 운영 지원을 위한 자발적 결제이며, 기부금 영수증 발급 대상이 아닙니다.
+        </p>
+    </aside>
+</section>
+{% endblock %}
+
+{% block scripts %}
+{% if donation_configured %}
+<script src="https://js.tosspayments.com/v2/standard"></script>
+<script>
+(function () {
+    const minAmount = {{ donation_min_amount }};
+    const maxAmount = {{ donation_max_amount }};
+    const presetButtons = Array.from(document.querySelectorAll(".donate-preset"));
+    const customInput = document.getElementById("customDonationAmount");
+    const selectedAmountEl = document.getElementById("selectedAmount");
+    const donateBtn = document.getElementById("donateBtn");
+    const errorEl = document.getElementById("donateError");
+    let selectedAmount = 5000;
+
+    function formatWon(value) {
+        return `${Number(value).toLocaleString("ko-KR")}원`;
+    }
+
+    function setAmount(value, source) {
+        const amount = Number(value);
+        if (!Number.isInteger(amount) || amount < minAmount || amount > maxAmount) return false;
+        selectedAmount = amount;
+        selectedAmountEl.textContent = formatWon(amount);
+        donateBtn.textContent = `${formatWon(amount)} 후원하기`;
+        errorEl.textContent = "";
+
+        presetButtons.forEach(button => {
+            button.classList.toggle("selected", source === button);
+        });
+        return true;
+    }
+
+    presetButtons.forEach(button => {
+        button.addEventListener("click", () => {
+            customInput.value = "";
+            setAmount(Number(button.dataset.amount), button);
+        });
+    });
+
+    customInput.addEventListener("input", () => {
+        const amount = Number(customInput.value);
+        if (!customInput.value) return;
+        presetButtons.forEach(button => button.classList.remove("selected"));
+        if (!setAmount(amount, null)) {
+            selectedAmountEl.textContent = "금액 확인 필요";
+            donateBtn.textContent = "후원 금액 확인";
+        }
+    });
+
+    donateBtn.addEventListener("click", async () => {
+        errorEl.textContent = "";
+        const customValue = customInput.value ? Number(customInput.value) : selectedAmount;
+        if (!Number.isInteger(customValue) || customValue < minAmount || customValue > maxAmount) {
+            errorEl.textContent = `${minAmount.toLocaleString("ko-KR")}원 이상 ${maxAmount.toLocaleString("ko-KR")}원 이하의 금액을 입력해 주세요.`;
+            return;
+        }
+
+        selectedAmount = customValue;
+        donateBtn.disabled = true;
+        donateBtn.textContent = "결제창을 여는 중...";
+
+        try {
+            const response = await fetch("/donation/intent", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({amount: selectedAmount})
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || "후원 결제 준비에 실패했습니다.");
+
+            const tossPayments = TossPayments(data.clientKey);
+            const payment = tossPayments.payment({customerKey: data.customerKey});
+            await payment.requestPayment({
+                method: "CARD",
+                amount: {currency: "KRW", value: data.amount},
+                orderId: data.orderId,
+                orderName: data.orderName,
+                successUrl: data.successUrl,
+                failUrl: data.failUrl,
+                windowTarget: "self"
+            });
+        } catch (error) {
+            errorEl.textContent = error.message || "결제 요청을 시작하지 못했습니다.";
+            donateBtn.disabled = false;
+            donateBtn.textContent = `${formatWon(selectedAmount)} 후원하기`;
+        }
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}
