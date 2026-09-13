@@ -12,7 +12,9 @@ from portrait_reference import match_agent_portrait_in_killfeed
 
 load_dotenv()
 
-MAX_GEMINI_EVENTS = max(1, min(3, int(os.getenv("COMBAT_GEMINI_MAX_EVENTS", "2"))))
+# Cost control applies only to fallback/non-kill checks. Likely kill/death scenes
+# are always sent, up to the six main events already produced by the analyzer.
+MIN_FALLBACK_EVENTS = max(0, min(2, int(os.getenv("COMBAT_MIN_FALLBACK_EVENTS", "1"))))
 
 
 class CombatVerificationItem(BaseModel):
@@ -36,17 +38,19 @@ class CombatVerificationResponse(BaseModel):
 
 PROMPT = """
 당신은 VALORANT 킬로그/사망 UI 전용 검증기입니다.
-서버가 먼저 모든 주요 장면을 로컬 초상화 매칭으로 훑고, 의심도가 높은 최대 2개 장면만 이 요청에 넣었습니다.
-각 이벤트에는 KILLFEED A/B가 제공되며, 사망 가능성이 있는 장면만 FULL CONTEXT가 추가됩니다.
+서버가 먼저 모든 주요 장면을 로컬 초상화 매칭으로 훑었습니다.
+킬 또는 사망 가능성이 있는 장면은 비용 절감을 이유로 제외하지 않고 모두 이 요청에 포함합니다.
+각 중요 전투 장면에는 KILLFEED A, KILLFEED B, FULL CONTEXT가 순서대로 제공됩니다.
 
 규칙:
 - 킬 판정은 확대 KILLFEED A/B를 최우선 증거로 사용합니다.
+- FULL CONTEXT를 함께 보고 실제 교전 흐름, 적 처치 직후 상황, POV 생존/사망을 확인합니다.
 - POV 플레이어 요원 초상화가 공격자 쪽에 명확히 있고 방향/팀 맥락이 맞을 때만 본인 kill의 강한 증거로 봅니다.
 - 어시스트 요원 아이콘을 공격자 아이콘으로 착각하지 마세요.
 - 단순 명중, 적이 화면에서 사라짐, 교전 우세만으로 kill을 추측하지 마세요.
 - death는 Combat Report, 관전자/리스폰 전환 등 직접 증거가 있어야 합니다. 피격/저체력/붉은 화면만으로 death라 하지 마세요.
-- FULL CONTEXT가 있는 경우 정상 HUD와 무기/체력이 유지되면 survived를 우선합니다.
-- 로컬 초상화 similarity 힌트는 '해당 초상화가 이미지 어딘가에 있을 가능성'일 뿐 공격자 위치를 뜻하지 않습니다.
+- 정상 HUD와 무기/체력이 유지되며 플레이가 계속되면 survived를 우선합니다.
+- 로컬 초상화 similarity 힌트는 해당 요원 초상화가 이미지 어딘가에 있을 가능성일 뿐 공격자 위치를 뜻하지 않습니다.
 - 불확실하면 uncertain을 사용합니다.
 - 기존 문장이 실제 킬/데스와 충돌할 때만 replace_text=true로 하고 짧게 수정합니다.
 - 전체 summary도 킬/데스 전제가 틀렸을 때만 수정하며 나머지 코칭은 유지합니다.
@@ -92,21 +96,28 @@ def _event_text(event: dict) -> str:
     ).casefold()
 
 
+def _contains_any(text: str, words: tuple[str, ...]) -> bool:
+    return any(word in text for word in words)
+
+
 def _text_score(event: dict) -> float:
     text = _event_text(event)
     score = 0.0
-    if any(word in text for word in _KILL_WORDS):
+    if _contains_any(text, _KILL_WORDS):
         score += 3.0
-    if any(word in text for word in _DEATH_WORDS):
+    if _contains_any(text, _DEATH_WORDS):
         score += 3.0
-    if any(word in text for word in _COMBAT_WORDS):
+    if _contains_any(text, _COMBAT_WORDS):
         score += 1.0
     return score
 
 
 def _death_suspected(event: dict) -> bool:
-    text = _event_text(event)
-    return any(word in text for word in _DEATH_WORDS)
+    return _contains_any(_event_text(event), _DEATH_WORDS)
+
+
+def _kill_text_suspected(event: dict) -> bool:
+    return _contains_any(_event_text(event), _KILL_WORDS)
 
 
 def _scan_portraits(events: list[dict], player_agent: str) -> dict[int, list[dict]]:
@@ -135,15 +146,49 @@ def _portrait_score(hints: list[dict]) -> float:
     return max(0.0, best) * 3.0 + (2.5 if ready else 0.0)
 
 
+def _kill_portrait_suspected(hints: list[dict]) -> bool:
+    if any(bool(item.get("ready")) for item in hints):
+        return True
+    # Slightly below the local matcher's hard threshold is still worth sending
+    # to Gemini, because killfeed scaling/compression can lower similarity.
+    return max((float(item.get("similarity") or 0.0) for item in hints), default=0.0) >= 0.50
+
+
+def _required_combat_event(event: dict, hints: list[dict]) -> bool:
+    return (
+        _kill_text_suspected(event)
+        or _death_suspected(event)
+        or _kill_portrait_suspected(hints)
+    )
+
+
 def _select_events(events: list[dict], portrait_hints: dict[int, list[dict]]) -> list[dict]:
-    ranked = []
+    required: list[tuple[int, dict]] = []
+    optional: list[tuple[float, int, dict]] = []
+
     for order, event in enumerate(events[:6]):
         idx = int(event.get("event_index", order))
-        score = _text_score(event) + _portrait_score(portrait_hints.get(idx, []))
-        ranked.append((score, -order, event))
+        hints = portrait_hints.get(idx, [])
+        if _required_combat_event(event, hints):
+            required.append((order, event))
+        else:
+            score = _text_score(event) + _portrait_score(hints)
+            optional.append((score, order, event))
 
-    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [item[2] for item in ranked[:MAX_GEMINI_EVENTS]]
+    # Every likely kill/death scene is kept. Cost savings come from dropping only
+    # low-signal ordinary scenes. If nothing obvious is found, keep one best
+    # fallback scene so a missed first-pass kill can still be caught.
+    selected = [event for _, event in required]
+    optional.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    target_min = min(6, max(len(selected), MIN_FALLBACK_EVENTS))
+    for _, _, event in optional:
+        if len(selected) >= target_min:
+            break
+        selected.append(event)
+
+    # Preserve original timeline order for easier model interpretation.
+    selected_ids = {id(event) for event in selected}
+    return [event for event in events[:6] if id(event) in selected_ids]
 
 
 def verify_combat_events(events: list[dict], summary: str = "", player_agent: str = "") -> dict:
@@ -159,14 +204,12 @@ def verify_combat_events(events: list[dict], summary: str = "", player_agent: st
             "local_scan_count": 0, "gemini_event_count": 0,
         }
 
-    # Free/local stage: all six scenes are scanned with cached official agent
-    # portraits. Only the two most suspicious scenes reach the paid API call.
     portrait_hints = _scan_portraits(scanned_events, player_agent)
     selected_events = _select_events(scanned_events, portrait_hints)
 
     print(
         f"[CombatVerifier] economy · local scan={len(scanned_events)} · "
-        f"Gemini selected={len(selected_events)} · max={MAX_GEMINI_EVENTS}"
+        f"Gemini combat scenes={len(selected_events)}"
     )
 
     client = genai.Client(api_key=api_key)
@@ -176,31 +219,34 @@ def verify_combat_events(events: list[dict], summary: str = "", player_agent: st
         "기존 전체 요약:\n" + str(summary or "")[:1000],
     ]
 
+    required_indices: list[int] = []
     for event in selected_events:
         idx = int(event.get("event_index", 0))
         timestamp = str(event.get("timestamp") or "")[:20]
         observation = str(event.get("observation") or "")[:360]
         feedback = str(event.get("feedback") or "")[:420]
         all_frames = list(event.get("frames") or [])[:3]
-        # Kill checks need only the two large killfeed crops. FULL CONTEXT is
-        # expensive and is attached only when the first pass actually suspects
-        # that the POV player died.
-        frames = all_frames[:3] if _death_suspected(event) else all_frames[:2]
         hints = portrait_hints.get(idx, [])
+        important_combat = _required_combat_event(event, hints)
+        if important_combat:
+            required_indices.append(idx)
 
+        # Important kill/death scenes always include the FULL CONTEXT image.
+        # The optional fallback scene uses only the two enlarged killfeed crops.
+        frames = all_frames[:3] if important_combat else all_frames[:2]
         formatted_hints = ", ".join(
             f"{chr(65 + i)} sim={float(h.get('similarity') or 0):.3f} ready={bool(h.get('ready'))}"
             for i, h in enumerate(hints[:2])
         ) or "없음"
 
         contents.append(
-            f"이벤트 {idx} · {timestamp}\n"
+            f"이벤트 {idx} · {timestamp} · 중요전투={important_combat}\n"
             f"기존 관찰: {observation}\n"
             f"기존 피드백: {feedback}\n"
             f"로컬 POV 요원 초상화 매칭: {formatted_hints}"
         )
         for frame_no, image_bytes in enumerate(frames):
-            label = "KILLFEED A" if frame_no == 0 else "KILLFEED B" if frame_no == 1 else "FULL CONTEXT"
+            label = "KILLFEED A" if frame_no == 0 else "KILLFEED B" if frame_no == 1 else "FULL COMBAT SCENE"
             contents.append(f"이벤트 {idx} · {label}")
             contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
 
@@ -240,6 +286,7 @@ def verify_combat_events(events: list[dict], summary: str = "", player_agent: st
                 "portrait_match_hints": portrait_hints,
                 "local_scan_count": len(scanned_events),
                 "gemini_event_count": len(selected_events),
+                "required_combat_event_indices": sorted(required_indices),
                 "selected_event_indices": sorted(selected_indices),
                 "economy_mode": True,
             }
