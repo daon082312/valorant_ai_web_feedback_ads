@@ -4,6 +4,7 @@
         "/guide": "사용 가이드",
         "/about": "About",
         "/premium": "Premium",
+        "/donate": "후원",
         "/privacy": "Privacy",
         "/terms": "Terms"
     };
@@ -144,6 +145,7 @@
         const alwaysModal = link.dataset.modalPage === "always"
             || url.pathname === "/history"
             || url.pathname === "/premium"
+            || url.pathname === "/donate"
             || url.pathname === "/guide"
             || url.pathname === "/about";
         const analysisModal = isAnalysisRunning() && Object.hasOwn(titleByPath, url.pathname);
