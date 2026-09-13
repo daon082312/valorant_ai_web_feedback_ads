@@ -56,14 +56,13 @@
                 type="number"
                 inputmode="numeric"
                 min="{{ donation_min_amount }}"
-                max="{{ donation_max_amount }}"
                 step="100"
                 placeholder="예: 2000"
             >
             <span>원</span>
         </div>
         <div class="donate-range muted">
-            {{ "{:,}".format(donation_min_amount) }}원 ~ {{ "{:,}".format(donation_max_amount) }}원
+            최소 {{ "{:,}".format(donation_min_amount) }}원 · 사이트 자체 최대 한도 없음
         </div>
 
         {% if donation_configured %}
@@ -97,7 +96,6 @@
 <script>
 (function () {
     const minAmount = {{ donation_min_amount }};
-    const maxAmount = {{ donation_max_amount }};
     const presetButtons = Array.from(document.querySelectorAll(".donate-preset"));
     const customInput = document.getElementById("customDonationAmount");
     const selectedAmountEl = document.getElementById("selectedAmount");
@@ -111,7 +109,7 @@
 
     function setAmount(value, source) {
         const amount = Number(value);
-        if (!Number.isInteger(amount) || amount < minAmount || amount > maxAmount) return false;
+        if (!Number.isSafeInteger(amount) || amount < minAmount) return false;
         selectedAmount = amount;
         selectedAmountEl.textContent = formatWon(amount);
         donateBtn.textContent = `${formatWon(amount)} 후원하기`;
@@ -143,8 +141,8 @@
     donateBtn.addEventListener("click", async () => {
         errorEl.textContent = "";
         const customValue = customInput.value ? Number(customInput.value) : selectedAmount;
-        if (!Number.isInteger(customValue) || customValue < minAmount || customValue > maxAmount) {
-            errorEl.textContent = `${minAmount.toLocaleString("ko-KR")}원 이상 ${maxAmount.toLocaleString("ko-KR")}원 이하의 금액을 입력해 주세요.`;
+        if (!Number.isSafeInteger(customValue) || customValue < minAmount) {
+            errorEl.textContent = `${minAmount.toLocaleString("ko-KR")}원 이상의 금액을 입력해 주세요.`;
             return;
         }
 
