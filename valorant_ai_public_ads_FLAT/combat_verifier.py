@@ -8,64 +8,82 @@ from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, Field
 
-from portrait_reference import match_agent_portrait_in_killfeed
+from portrait_reference import build_ui_reference_sheets
 
 load_dotenv()
-
-# Cost control applies only to fallback/non-kill checks. Likely kill/death scenes
-# are always sent, up to the six main events already produced by the analyzer.
-MIN_FALLBACK_EVENTS = max(0, min(2, int(os.getenv("COMBAT_MIN_FALLBACK_EVENTS", "1"))))
 
 
 class CombatVerificationItem(BaseModel):
     event_index: int = Field(ge=0, le=20)
     outcome: Literal["kill", "death", "assist", "survived", "no_combat", "uncertain"]
     confidence: float = Field(ge=0, le=1)
-    evidence: str = Field(description="판정 근거를 매우 짧은 한국어 한 문장으로 작성")
+    evidence: str = Field(description="전투 결과 근거를 짧은 한국어 한 문장으로 작성")
     killfeed_visible: bool
     killfeed_supports_pov_kill: bool
-    killfeed_note: str = Field(description="킬로그 근거를 짧은 한국어 한 문장으로 작성")
+    killfeed_note: str = Field(description="킬로그에서 실제로 읽은 내용을 짧게 작성")
+    ability_name: str | None = Field(default=None, description="이 장면에서 실제 사용이 확인된 최종 요원의 스킬 영문명. 불확실하면 null")
+    ability_confidence: float = Field(default=0.0, ge=0, le=1)
+    ability_evidence: str = Field(default="", description="스킬 판정의 HUD/화면 근거를 짧게 작성")
     replace_text: bool
-    corrected_observation: str = Field(description="필요할 때만 수정 관찰 한 문장")
-    corrected_feedback: str = Field(description="필요할 때만 수정 코칭 한 문장")
+    corrected_observation: str = Field(description="검증 결과를 반영한 관찰 한 문장")
+    corrected_feedback: str = Field(description="검증 결과를 반영한 코칭 한 문장")
 
 
 class CombatVerificationResponse(BaseModel):
+    agent: str = Field(description="FULL HUD CONTEXT의 실제 능력 아이콘 세트로 판정한 POV 플레이어 요원 영문명. 불확실하면 Unknown")
+    agent_confidence: float = Field(ge=0, le=1)
+    agent_evidence: str = Field(description="요원 판정 근거를 짧은 한국어 한 문장으로 작성")
     events: list[CombatVerificationItem]
     replace_summary: bool
-    corrected_summary: str = Field(description="필요할 때만 킬/데스 오류를 수정한 기존 요약")
+    corrected_summary: str = Field(description="필요한 경우에만 잘못된 킬/데스/요원 전제를 바로잡은 기존 요약")
 
 
 PROMPT = """
-당신은 VALORANT 킬로그/사망 UI 전용 검증기입니다.
-서버가 먼저 모든 주요 장면을 로컬 초상화 매칭으로 훑었습니다.
-킬 또는 사망 가능성이 있는 장면은 비용 절감을 이유로 제외하지 않고 모두 이 요청에 포함합니다.
-각 중요 전투 장면에는 KILLFEED A, KILLFEED B, FULL CONTEXT가 순서대로 제공됩니다.
+당신은 VALORANT의 HUD를 정밀 판독하는 검증기입니다.
+이번 요청의 목적은 3가지를 한 번에 다시 확인하는 것입니다.
+1) POV 플레이어의 요원
+2) 각 주요 장면에서 실제 사용된 스킬
+3) POV 플레이어의 킬/사망/생존
 
-규칙:
-- 킬 판정은 확대 KILLFEED A/B를 최우선 증거로 사용합니다.
-- FULL CONTEXT를 함께 보고 실제 교전 흐름, 적 처치 직후 상황, POV 생존/사망을 확인합니다.
-- POV 플레이어 요원 초상화가 공격자 쪽에 명확히 있고 방향/팀 맥락이 맞을 때만 본인 kill의 강한 증거로 봅니다.
-- 어시스트 요원 아이콘을 공격자 아이콘으로 착각하지 마세요.
-- 단순 명중, 적이 화면에서 사라짐, 교전 우세만으로 kill을 추측하지 마세요.
-- death는 Combat Report, 관전자/리스폰 전환 등 직접 증거가 있어야 합니다. 피격/저체력/붉은 화면만으로 death라 하지 마세요.
-- 정상 HUD와 무기/체력이 유지되며 플레이가 계속되면 survived를 우선합니다.
-- 로컬 초상화 similarity 힌트는 해당 요원 초상화가 이미지 어딘가에 있을 가능성일 뿐 공격자 위치를 뜻하지 않습니다.
-- 불확실하면 uncertain을 사용합니다.
-- 기존 문장이 실제 킬/데스와 충돌할 때만 replace_text=true로 하고 짧게 수정합니다.
-- 전체 summary도 킬/데스 전제가 틀렸을 때만 수정하며 나머지 코칭은 유지합니다.
-- evidence, killfeed_note, corrected_*는 최대한 짧게 쓰세요.
+가장 먼저 제공되는 UI REFERENCE SHEET들을 반드시 기준으로 사용하세요.
+각 요원 칸에는 실제 게임의 killfeedPortrait와 공식 ability displayIcon 4개가 요원명/스킬명과 함께 있습니다.
+당신의 기억보다 참조표와 영상 HUD가 우선입니다.
+
+[요원 판정]
+- 기존 분석의 요원명은 참고값일 뿐 정답이 아닙니다.
+- 각 이벤트의 FULL HUD CONTEXT 아래쪽에는 같은 시점의 하단 능력 HUD가 크게 확대되어 있습니다.
+- 여러 이벤트에서 반복해서 보이는 4개 능력 아이콘 세트를 UI REFERENCE SHEET와 대조해 최종 요원을 정하세요.
+- 한 아이콘이나 손 모양 하나만 보고 확정하지 마세요. 가능하면 서로 다른 2개 이상의 능력 아이콘 일치를 확인하세요.
+- 참조표와 충분히 맞지 않으면 agent="Unknown"으로 두세요.
+
+[스킬 판정]
+- 먼저 최종 요원을 정한 뒤 그 요원의 공식 4개 스킬만 후보로 사용하세요.
+- 이벤트의 FULL HUD CONTEXT에서 직전→직후 HUD 변화, 능력 아이콘의 사용/쿨다운 상태, 화면의 실제 스킬 효과를 함께 봅니다.
+- 총격, 재장전, 무기 교체, 일반 이동을 스킬로 오인하지 마세요.
+- 실제 사용이 확실하지 않으면 ability_name=null, ability_confidence를 낮게 두세요.
+- 다른 요원의 스킬 이름은 절대로 반환하지 마세요.
+
+[킬로그 판정]
+- KILLFEED A는 우측 킬로그 전체 세로 스택을 넓게 보여줍니다.
+- KILLFEED B는 다른 킬 때문에 아래로 밀린 오래된 행을 놓치지 않도록 아래쪽 스택을 더 크게 보여줍니다.
+- 동시에 여러 킬이 나면 최신 킬이 위에 추가되고 기존 행이 아래로 밀릴 수 있으므로 모든 행을 위에서 아래까지 각각 읽으세요.
+- 공격자/피해자 killfeedPortrait를 UI REFERENCE SHEET의 실제 killfeedPortrait와 대조하세요.
+- POV 요원이 공격자 쪽에 명확히 있을 때만 POV kill로 확정하세요.
+- 어시스트 아이콘을 공격자 아이콘으로 착각하지 마세요.
+- 킬로그가 화면 아래쪽으로 밀렸더라도 B 이미지에서 다시 찾아보세요.
+- 단순 명중이나 적이 사라졌다는 이유만으로 kill로 추측하지 마세요.
+
+[사망 판정]
+- POV death는 Combat Report, 관전자 전환, 리스폰/사망 화면 등 직접 증거가 있어야 합니다.
+- 피격, 저체력, 붉은 화면, 흔들림만으로 death라고 하지 마세요.
+- 직후에도 정상 HUD/무기/체력이 유지되며 플레이하면 survived입니다.
+
+[출력]
+- 제공된 모든 이벤트를 event_index 그대로 정확히 한 번씩 반환하세요.
+- 기존 observation/feedback이 실제 화면과 충돌할 때만 replace_text=true로 수정하세요.
+- evidence 문장은 짧게 유지하세요.
+- 확실하지 않은 내용은 uncertain/null로 두는 것이 잘못된 단정보다 낫습니다.
 """
-
-_KILL_WORDS = (
-    "킬", "처치", "죽였", "제거", "헤드샷", "킬로그", "kill", "killed", "eliminat", "headshot",
-)
-_DEATH_WORDS = (
-    "사망", "죽었", "죽음", "데스", "combat report", "관전자", "death", "died", "dead",
-)
-_COMBAT_WORDS = (
-    "교전", "적", "총격", "피격", "에임", "aim", "fight", "duel", "enemy", "damage",
-)
 
 
 def _truthy_env(name: str, default: bool = False) -> bool:
@@ -80,115 +98,24 @@ def _model_candidates() -> list[str]:
     candidates = [requested or "gemini-3.1-flash-lite"]
     if _truthy_env("COMBAT_ALLOW_QUALITY_FALLBACK", False):
         candidates.append("gemini-3.5-flash-lite")
-
     result: list[str] = []
     for value in candidates:
-        value = value.removeprefix("models/").strip()
+        value = value.strip().removeprefix("models/")
         if value and value not in result:
             result.append(value)
     return result
 
 
-def _event_text(event: dict) -> str:
-    return (
-        str(event.get("observation") or "") + " " +
-        str(event.get("feedback") or "")
-    ).casefold()
-
-
-def _contains_any(text: str, words: tuple[str, ...]) -> bool:
-    return any(word in text for word in words)
-
-
-def _text_score(event: dict) -> float:
-    text = _event_text(event)
-    score = 0.0
-    if _contains_any(text, _KILL_WORDS):
-        score += 3.0
-    if _contains_any(text, _DEATH_WORDS):
-        score += 3.0
-    if _contains_any(text, _COMBAT_WORDS):
-        score += 1.0
-    return score
-
-
-def _death_suspected(event: dict) -> bool:
-    return _contains_any(_event_text(event), _DEATH_WORDS)
-
-
-def _kill_text_suspected(event: dict) -> bool:
-    return _contains_any(_event_text(event), _KILL_WORDS)
-
-
-def _scan_portraits(events: list[dict], player_agent: str) -> dict[int, list[dict]]:
-    hints_by_event: dict[int, list[dict]] = {}
-    if not player_agent or player_agent.casefold() == "unknown":
-        return hints_by_event
-
-    for event in events[:6]:
-        idx = int(event.get("event_index", 0))
-        hints: list[dict] = []
-        for image_bytes in list(event.get("frames") or [])[:2]:
-            try:
-                hints.append(match_agent_portrait_in_killfeed(image_bytes, player_agent))
-            except Exception as exc:
-                print(f"[CombatVerifier] local portrait match skipped: {type(exc).__name__}: {exc}")
-        hints_by_event[idx] = hints
-    return hints_by_event
-
-
-def _portrait_score(hints: list[dict]) -> float:
-    if not hints:
-        return 0.0
-    similarities = [float(item.get("similarity") or 0.0) for item in hints]
-    best = max(similarities, default=0.0)
-    ready = any(bool(item.get("ready")) for item in hints)
-    return max(0.0, best) * 3.0 + (2.5 if ready else 0.0)
-
-
-def _kill_portrait_suspected(hints: list[dict]) -> bool:
-    if any(bool(item.get("ready")) for item in hints):
-        return True
-    # Slightly below the local matcher's hard threshold is still worth sending
-    # to Gemini, because killfeed scaling/compression can lower similarity.
-    return max((float(item.get("similarity") or 0.0) for item in hints), default=0.0) >= 0.50
-
-
-def _required_combat_event(event: dict, hints: list[dict]) -> bool:
-    return (
-        _kill_text_suspected(event)
-        or _death_suspected(event)
-        or _kill_portrait_suspected(hints)
-    )
-
-
-def _select_events(events: list[dict], portrait_hints: dict[int, list[dict]]) -> list[dict]:
-    required: list[tuple[int, dict]] = []
-    optional: list[tuple[float, int, dict]] = []
-
-    for order, event in enumerate(events[:6]):
-        idx = int(event.get("event_index", order))
-        hints = portrait_hints.get(idx, [])
-        if _required_combat_event(event, hints):
-            required.append((order, event))
-        else:
-            score = _text_score(event) + _portrait_score(hints)
-            optional.append((score, order, event))
-
-    # Every likely kill/death scene is kept. Cost savings come from dropping only
-    # low-signal ordinary scenes. If nothing obvious is found, keep one best
-    # fallback scene so a missed first-pass kill can still be caught.
-    selected = [event for _, event in required]
-    optional.sort(key=lambda item: (item[0], -item[1]), reverse=True)
-    target_min = min(6, max(len(selected), MIN_FALLBACK_EVENTS))
-    for _, _, event in optional:
-        if len(selected) >= target_min:
-            break
-        selected.append(event)
-
-    # Preserve original timeline order for easier model interpretation.
-    selected_ids = {id(event) for event in selected}
-    return [event for event in events[:6] if id(event) in selected_ids]
+def _usage_metadata(response) -> dict:
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return {}
+    return {
+        "prompt_tokens": int(getattr(usage, "prompt_token_count", 0) or 0),
+        "output_tokens": int(getattr(usage, "candidates_token_count", 0) or 0),
+        "thought_tokens": int(getattr(usage, "thoughts_token_count", 0) or 0),
+        "total_tokens": int(getattr(usage, "total_token_count", 0) or 0),
+    }
 
 
 def verify_combat_events(events: list[dict], summary: str = "", player_agent: str = "") -> dict:
@@ -201,57 +128,54 @@ def verify_combat_events(events: list[dict], summary: str = "", player_agent: st
         return {
             "events": [], "model_used": "", "verified": False,
             "replace_summary": False, "corrected_summary": summary,
-            "local_scan_count": 0, "gemini_event_count": 0,
+            "agent": "Unknown", "agent_confidence": 0.0,
+            "agent_evidence": "검증할 장면이 없습니다.",
         }
 
-    portrait_hints = _scan_portraits(scanned_events, player_agent)
-    selected_events = _select_events(scanned_events, portrait_hints)
-
-    print(
-        f"[CombatVerifier] economy · local scan={len(scanned_events)} · "
-        f"Gemini combat scenes={len(selected_events)}"
-    )
+    try:
+        reference_sheets = build_ui_reference_sheets()
+    except Exception as exc:
+        print(f"[HUDVerifier] reference sheet skipped: {type(exc).__name__}: {exc}")
+        reference_sheets = []
 
     client = genai.Client(api_key=api_key)
     contents: list = [
         PROMPT,
-        f"POV 플레이어 요원: {str(player_agent or 'Unknown')[:80]}",
-        "기존 전체 요약:\n" + str(summary or "")[:1000],
+        f"기존 1차 분석 요원(정답 아님): {str(player_agent or 'Unknown')[:80]}",
+        "기존 전체 요약:\n" + str(summary or "")[:1200],
     ]
 
-    required_indices: list[int] = []
-    for event in selected_events:
+    for sheet_index, sheet in enumerate(reference_sheets[:2]):
+        contents.append(f"UI REFERENCE SHEET {sheet_index + 1}: 실제 killfeedPortrait + 공식 스킬 아이콘")
+        contents.append(types.Part.from_bytes(data=sheet, mime_type="image/jpeg"))
+
+    # Accuracy first: every major event reaches this single verifier call. There
+    # is still only one paid request, so no event is silently dropped before the
+    # model has a chance to inspect its HUD/killfeed.
+    for event in scanned_events:
         idx = int(event.get("event_index", 0))
         timestamp = str(event.get("timestamp") or "")[:20]
-        observation = str(event.get("observation") or "")[:360]
-        feedback = str(event.get("feedback") or "")[:420]
-        all_frames = list(event.get("frames") or [])[:3]
-        hints = portrait_hints.get(idx, [])
-        important_combat = _required_combat_event(event, hints)
-        if important_combat:
-            required_indices.append(idx)
-
-        # Important kill/death scenes always include the FULL CONTEXT image.
-        # The optional fallback scene uses only the two enlarged killfeed crops.
-        frames = all_frames[:3] if important_combat else all_frames[:2]
-        formatted_hints = ", ".join(
-            f"{chr(65 + i)} sim={float(h.get('similarity') or 0):.3f} ready={bool(h.get('ready'))}"
-            for i, h in enumerate(hints[:2])
-        ) or "없음"
+        observation = str(event.get("observation") or "")[:450]
+        feedback = str(event.get("feedback") or "")[:500]
+        frames = list(event.get("frames") or [])[:3]
 
         contents.append(
-            f"이벤트 {idx} · {timestamp} · 중요전투={important_combat}\n"
+            f"EVENT {idx} · timestamp={timestamp}\n"
             f"기존 관찰: {observation}\n"
             f"기존 피드백: {feedback}\n"
-            f"로컬 POV 요원 초상화 매칭: {formatted_hints}"
+            "이미지 순서: KILLFEED A(전체 스택), KILLFEED B(아래쪽 스택), FULL HUD CONTEXT(전체 장면+하단 HUD 확대)."
         )
+        labels = [
+            "KILLFEED A · 전체 세로 스택",
+            "KILLFEED B · 아래로 밀린 행 확대",
+            "FULL HUD CONTEXT · 전체 장면과 하단 능력 HUD 확대",
+        ]
         for frame_no, image_bytes in enumerate(frames):
-            label = "KILLFEED A" if frame_no == 0 else "KILLFEED B" if frame_no == 1 else "FULL COMBAT SCENE"
-            contents.append(f"이벤트 {idx} · {label}")
+            contents.append(f"EVENT {idx} · {labels[frame_no] if frame_no < len(labels) else 'FRAME'}")
             contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
 
     errors_seen: list[str] = []
-    selected_indices = {int(event.get("event_index", 0)) for event in selected_events}
+    requested_indices = {int(event.get("event_index", 0)) for event in scanned_events}
 
     for model in _model_candidates():
         try:
@@ -262,7 +186,7 @@ def verify_combat_events(events: list[dict], summary: str = "", player_agent: st
                     response_mime_type="application/json",
                     response_schema=CombatVerificationResponse,
                     temperature=0.0,
-                    max_output_tokens=900,
+                    max_output_tokens=1600,
                     media_resolution=types.MediaResolution.MEDIA_RESOLUTION_HIGH,
                     thinking_config=types.ThinkingConfig(thinking_level="minimal"),
                     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
@@ -274,25 +198,39 @@ def verify_combat_events(events: list[dict], summary: str = "", player_agent: st
             parsed = CombatVerificationResponse.model_validate_json(response.text).model_dump()
             filtered = [
                 item for item in parsed.get("events", [])
-                if int(item.get("event_index", -1)) in selected_indices
+                if int(item.get("event_index", -1)) in requested_indices
             ]
+            usage = _usage_metadata(response)
+            if usage:
+                print(
+                    "[HUDVerifier] tokens · "
+                    f"input={usage.get('prompt_tokens', 0)} · "
+                    f"output={usage.get('output_tokens', 0)} · "
+                    f"thinking={usage.get('thought_tokens', 0)} · "
+                    f"total={usage.get('total_tokens', 0)}"
+                )
+
             return {
                 "events": filtered,
                 "model_used": model,
                 "verified": bool(filtered),
                 "replace_summary": bool(parsed.get("replace_summary")),
                 "corrected_summary": str(parsed.get("corrected_summary") or summary),
-                "portrait_reference_used": bool(portrait_hints),
-                "portrait_match_hints": portrait_hints,
+                "agent": str(parsed.get("agent") or "Unknown"),
+                "agent_confidence": float(parsed.get("agent_confidence") or 0.0),
+                "agent_evidence": str(parsed.get("agent_evidence") or ""),
+                "portrait_reference_used": bool(reference_sheets),
+                "ui_reference_sheets": len(reference_sheets),
                 "local_scan_count": len(scanned_events),
-                "gemini_event_count": len(selected_events),
-                "required_combat_event_indices": sorted(required_indices),
-                "selected_event_indices": sorted(selected_indices),
+                "gemini_event_count": len(scanned_events),
+                "selected_event_indices": sorted(requested_indices),
                 "economy_mode": True,
+                "token_usage": usage,
+                "unified_hud_verification": True,
             }
         except (errors.APIError, ValueError, RuntimeError) as exc:
             text = f"{model}: {type(exc).__name__}: {exc}"
             errors_seen.append(text)
-            print(f"[CombatVerifier] {text}")
+            print(f"[HUDVerifier] {text}")
 
-    raise RuntimeError("COMBAT_VERIFICATION_FAILED: " + " | ".join(errors_seen[-2:]))
+    raise RuntimeError("HUD_VERIFICATION_FAILED: " + " | ".join(errors_seen[-2:]))
