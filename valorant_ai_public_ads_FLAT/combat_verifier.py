@@ -37,7 +37,7 @@ class CombatVerificationResponse(BaseModel):
 PROMPT = """
 당신은 VALORANT 킬로그/사망 UI 전용 검증기입니다.
 서버가 먼저 모든 주요 장면을 로컬 초상화 매칭으로 훑고, 의심도가 높은 최대 2개 장면만 이 요청에 넣었습니다.
-각 이벤트에는 KILLFEED A, KILLFEED B, FULL CONTEXT가 순서대로 제공됩니다.
+각 이벤트에는 KILLFEED A/B가 제공되며, 사망 가능성이 있는 장면만 FULL CONTEXT가 추가됩니다.
 
 규칙:
 - 킬 판정은 확대 KILLFEED A/B를 최우선 증거로 사용합니다.
@@ -45,7 +45,7 @@ PROMPT = """
 - 어시스트 요원 아이콘을 공격자 아이콘으로 착각하지 마세요.
 - 단순 명중, 적이 화면에서 사라짐, 교전 우세만으로 kill을 추측하지 마세요.
 - death는 Combat Report, 관전자/리스폰 전환 등 직접 증거가 있어야 합니다. 피격/저체력/붉은 화면만으로 death라 하지 마세요.
-- 이후 정상 HUD와 무기/체력이 유지되면 survived를 우선합니다.
+- FULL CONTEXT가 있는 경우 정상 HUD와 무기/체력이 유지되면 survived를 우선합니다.
 - 로컬 초상화 similarity 힌트는 '해당 초상화가 이미지 어딘가에 있을 가능성'일 뿐 공격자 위치를 뜻하지 않습니다.
 - 불확실하면 uncertain을 사용합니다.
 - 기존 문장이 실제 킬/데스와 충돌할 때만 replace_text=true로 하고 짧게 수정합니다.
@@ -64,9 +64,19 @@ _COMBAT_WORDS = (
 )
 
 
+def _truthy_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _model_candidates() -> list[str]:
-    requested = os.getenv("COMBAT_VERIFIER_MODEL", "").strip()
-    candidates = [requested or "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
+    requested = os.getenv("COMBAT_VERIFIER_MODEL", "").strip().removeprefix("models/")
+    candidates = [requested or "gemini-3.1-flash-lite"]
+    if _truthy_env("COMBAT_ALLOW_QUALITY_FALLBACK", False):
+        candidates.append("gemini-3.5-flash-lite")
+
     result: list[str] = []
     for value in candidates:
         value = value.removeprefix("models/").strip()
@@ -75,11 +85,15 @@ def _model_candidates() -> list[str]:
     return result
 
 
-def _text_score(event: dict) -> float:
-    text = (
+def _event_text(event: dict) -> str:
+    return (
         str(event.get("observation") or "") + " " +
         str(event.get("feedback") or "")
     ).casefold()
+
+
+def _text_score(event: dict) -> float:
+    text = _event_text(event)
     score = 0.0
     if any(word in text for word in _KILL_WORDS):
         score += 3.0
@@ -88,6 +102,11 @@ def _text_score(event: dict) -> float:
     if any(word in text for word in _COMBAT_WORDS):
         score += 1.0
     return score
+
+
+def _death_suspected(event: dict) -> bool:
+    text = _event_text(event)
+    return any(word in text for word in _DEATH_WORDS)
 
 
 def _scan_portraits(events: list[dict], player_agent: str) -> dict[int, list[dict]]:
@@ -113,15 +132,10 @@ def _portrait_score(hints: list[dict]) -> float:
     similarities = [float(item.get("similarity") or 0.0) for item in hints]
     best = max(similarities, default=0.0)
     ready = any(bool(item.get("ready")) for item in hints)
-    # Strong local portrait matches should pull the scene toward Gemini
-    # verification even when the first-pass model forgot to mention a kill.
     return max(0.0, best) * 3.0 + (2.5 if ready else 0.0)
 
 
-def _select_events(
-    events: list[dict],
-    portrait_hints: dict[int, list[dict]],
-) -> list[dict]:
+def _select_events(events: list[dict], portrait_hints: dict[int, list[dict]]) -> list[dict]:
     ranked = []
     for order, event in enumerate(events[:6]):
         idx = int(event.get("event_index", order))
@@ -132,11 +146,7 @@ def _select_events(
     return [item[2] for item in ranked[:MAX_GEMINI_EVENTS]]
 
 
-def verify_combat_events(
-    events: list[dict],
-    summary: str = "",
-    player_agent: str = "",
-) -> dict:
+def verify_combat_events(events: list[dict], summary: str = "", player_agent: str = "") -> dict:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY_NOT_CONFIGURED")
@@ -144,22 +154,18 @@ def verify_combat_events(
     scanned_events = list(events or [])[:6]
     if not scanned_events:
         return {
-            "events": [],
-            "model_used": "",
-            "verified": False,
-            "replace_summary": False,
-            "corrected_summary": summary,
-            "local_scan_count": 0,
-            "gemini_event_count": 0,
+            "events": [], "model_used": "", "verified": False,
+            "replace_summary": False, "corrected_summary": summary,
+            "local_scan_count": 0, "gemini_event_count": 0,
         }
 
-    # Free/local stage: inspect all six scenes with the cached official portrait
-    # references. Only the two most suspicious scenes reach the paid Gemini call.
+    # Free/local stage: all six scenes are scanned with cached official agent
+    # portraits. Only the two most suspicious scenes reach the paid API call.
     portrait_hints = _scan_portraits(scanned_events, player_agent)
     selected_events = _select_events(scanned_events, portrait_hints)
 
     print(
-        f"[CombatVerifier] local scan={len(scanned_events)} · "
+        f"[CombatVerifier] economy · local scan={len(scanned_events)} · "
         f"Gemini selected={len(selected_events)} · max={MAX_GEMINI_EVENTS}"
     )
 
@@ -167,15 +173,19 @@ def verify_combat_events(
     contents: list = [
         PROMPT,
         f"POV 플레이어 요원: {str(player_agent or 'Unknown')[:80]}",
-        "기존 전체 요약:\n" + str(summary or "")[:1200],
+        "기존 전체 요약:\n" + str(summary or "")[:1000],
     ]
 
     for event in selected_events:
         idx = int(event.get("event_index", 0))
         timestamp = str(event.get("timestamp") or "")[:20]
-        observation = str(event.get("observation") or "")[:420]
-        feedback = str(event.get("feedback") or "")[:500]
-        frames = list(event.get("frames") or [])[:3]
+        observation = str(event.get("observation") or "")[:360]
+        feedback = str(event.get("feedback") or "")[:420]
+        all_frames = list(event.get("frames") or [])[:3]
+        # Kill checks need only the two large killfeed crops. FULL CONTEXT is
+        # expensive and is attached only when the first pass actually suspects
+        # that the POV player died.
+        frames = all_frames[:3] if _death_suspected(event) else all_frames[:2]
         hints = portrait_hints.get(idx, [])
 
         formatted_hints = ", ".join(
@@ -190,12 +200,7 @@ def verify_combat_events(
             f"로컬 POV 요원 초상화 매칭: {formatted_hints}"
         )
         for frame_no, image_bytes in enumerate(frames):
-            if frame_no == 0:
-                label = "KILLFEED A"
-            elif frame_no == 1:
-                label = "KILLFEED B"
-            else:
-                label = "FULL CONTEXT"
+            label = "KILLFEED A" if frame_no == 0 else "KILLFEED B" if frame_no == 1 else "FULL CONTEXT"
             contents.append(f"이벤트 {idx} · {label}")
             contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
 
@@ -211,7 +216,7 @@ def verify_combat_events(
                     response_mime_type="application/json",
                     response_schema=CombatVerificationResponse,
                     temperature=0.0,
-                    max_output_tokens=1000,
+                    max_output_tokens=900,
                     media_resolution=types.MediaResolution.MEDIA_RESOLUTION_HIGH,
                     thinking_config=types.ThinkingConfig(thinking_level="minimal"),
                     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
