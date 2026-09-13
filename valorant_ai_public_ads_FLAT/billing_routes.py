@@ -27,6 +27,7 @@ from billing_service import (
     run_due_renewals,
     save_billing_key,
 )
+from donation_routes import build_donation_router
 from history_routes import build_history_router
 from vision_routes import build_vision_router
 
@@ -170,6 +171,7 @@ def build_billing_router(get_auth_context, attach_refreshed_session, public_base
         result = await asyncio.to_thread(run_due_renewals)
         return JSONResponse({"ok": True, **result})
 
+    router.include_router(build_donation_router(public_base_url))
     router.include_router(
         build_history_router(
             get_auth_context,
