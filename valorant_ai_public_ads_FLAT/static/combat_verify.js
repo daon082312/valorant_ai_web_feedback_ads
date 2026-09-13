@@ -45,20 +45,32 @@
         return canvas;
     }
 
-    function snapshotKillfeedCanvas(targetWidth = 1280) {
+    function snapshotKillfeedCanvas(mode = "full-stack", targetWidth = 1440) {
         const sourceWidth = player.videoWidth || 1280;
         const sourceHeight = player.videoHeight || 720;
 
-        // Keep the entire upper-right killfeed block rather than a narrow row.
-        // 2026 killfeed entries can include assist portraits and ability icons,
-        // so a wider/taller crop prevents those elements from being clipped.
-        const sx = Math.floor(sourceWidth * 0.40);
-        const sy = 0;
-        const sw = Math.max(1, Math.floor(sourceWidth * 0.60));
-        const sh = Math.max(1, Math.floor(sourceHeight * 0.46));
+        // Simultaneous eliminations push older killfeed rows downward. Capture
+        // a much taller region than before, then use a second crop focused on
+        // the lower half so rows 2-5 remain large enough to read.
+        let sx;
+        let sy;
+        let sw;
+        let sh;
+
+        if (mode === "lower-stack") {
+            sx = Math.floor(sourceWidth * 0.30);
+            sy = Math.floor(sourceHeight * 0.10);
+            sw = Math.max(1, Math.floor(sourceWidth * 0.70));
+            sh = Math.max(1, Math.floor(sourceHeight * 0.68));
+        } else {
+            sx = Math.floor(sourceWidth * 0.30);
+            sy = 0;
+            sw = Math.max(1, Math.floor(sourceWidth * 0.70));
+            sh = Math.max(1, Math.floor(sourceHeight * 0.72));
+        }
+
         const width = targetWidth;
         const height = Math.max(1, Math.round(sh * (width / sw)));
-
         const canvas = document.createElement("canvas");
         canvas.width = width;
         canvas.height = height;
@@ -134,11 +146,10 @@
                 const event = events[index];
                 const center = timestampToSeconds(event.timestamp);
 
-                // The main model timestamps can be off by roughly one second.
-                // Capture a broad context window, but send killfeed as two large
-                // standalone frames so multiple stacked entries never get shrunk
-                // into a small contact-sheet cell.
-                const offsets = [-0.45, 0.20, 0.90, 1.55];
+                // The main-model timestamp can be off by ~1 second. Capture a
+                // wider temporal window, including a later point where a POV kill
+                // may have been pushed down by other simultaneous eliminations.
+                const offsets = [-0.45, 0.15, 0.65, 1.20, 1.75];
                 const samples = [];
 
                 for (const offset of offsets) {
@@ -146,14 +157,16 @@
                     samples.push({
                         offset,
                         full: snapshotFullCanvas(960),
-                        killfeed: snapshotKillfeedCanvas(1280)
+                        killfeedFull: snapshotKillfeedCanvas("full-stack", 1440),
+                        killfeedLower: snapshotKillfeedCanvas("lower-stack", 1440)
                     });
                 }
 
-                // Prefer post-event frames for killfeed because the entry appears
-                // immediately after the elimination and remains visible briefly.
-                const killfeedA = canvasToJpeg(samples[1].killfeed, 0.90);
-                const killfeedB = canvasToJpeg(samples[2].killfeed, 0.90);
+                // A: early full stack catches the new entry near the top.
+                // B: later lower-stack crop catches the same POV kill after
+                // simultaneous kills push it several rows downward.
+                const killfeedA = canvasToJpeg(samples[1].killfeedFull, 0.91);
+                const killfeedB = canvasToJpeg(samples[3].killfeedLower, 0.91);
                 const fullSheet = buildFullContextSheet(samples);
 
                 payloadEvents.push({
@@ -304,7 +317,7 @@
 
         try {
             if (statusBoxEl) {
-                statusBoxEl.textContent = "요원 초상화와 큰 킬로그 프레임으로 킬/데스를 재검증하는 중...";
+                statusBoxEl.textContent = "동시 킬로 아래로 밀린 킬로그까지 확대해 재검증하는 중...";
             }
             const verification = await requestCombatVerification(data);
             if (!verification?.verified) {
@@ -321,7 +334,7 @@
             }
 
             if (statusBoxEl) {
-                const base = `분석 완료 · ${data.model_used || "Gemini"} · 초상화+킬로그 확대 검증 완료`;
+                const base = `분석 완료 · ${data.model_used || "Gemini"} · 전체+하단 킬로그 검증 완료`;
                 statusBoxEl.textContent = data.usage?.premium ? `${base} · PREMIUM` : base;
             }
         } catch (error) {
