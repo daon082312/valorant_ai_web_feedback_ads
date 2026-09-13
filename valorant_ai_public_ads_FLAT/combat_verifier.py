@@ -8,73 +8,60 @@ from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, Field
 
-from portrait_reference import (
-    build_agent_portrait_reference_sheet,
-    match_agent_portrait_in_killfeed,
-)
+from portrait_reference import match_agent_portrait_in_killfeed
 
 load_dotenv()
+
+MAX_GEMINI_EVENTS = max(1, min(3, int(os.getenv("COMBAT_GEMINI_MAX_EVENTS", "2"))))
 
 
 class CombatVerificationItem(BaseModel):
     event_index: int = Field(ge=0, le=20)
     outcome: Literal["kill", "death", "assist", "survived", "no_combat", "uncertain"]
     confidence: float = Field(ge=0, le=1)
-    evidence: str = Field(description="판정 근거가 된 화면 UI/상황을 한국어 한 문장으로 작성")
-    killfeed_visible: bool = Field(description="확대된 우측 상단 킬로그에서 읽을 수 있는 엔트리가 보이는지")
-    killfeed_supports_pov_kill: bool = Field(description="킬로그가 POV 플레이어 본인의 적 처치를 직접 지지하는지")
-    killfeed_note: str = Field(description="킬로그에서 실제로 확인한 내용을 한국어 한 문장으로 작성")
-    replace_text: bool = Field(description="기존 관찰/피드백의 전투 결과가 틀렸거나 명백한 결과를 놓쳐 문장 교체가 필요한지")
-    corrected_observation: str = Field(description="검증 결과를 반영한 한국어 관찰 한 문장")
-    corrected_feedback: str = Field(description="검증 결과를 반영한 한국어 코칭 1~2문장")
+    evidence: str = Field(description="판정 근거를 매우 짧은 한국어 한 문장으로 작성")
+    killfeed_visible: bool
+    killfeed_supports_pov_kill: bool
+    killfeed_note: str = Field(description="킬로그 근거를 짧은 한국어 한 문장으로 작성")
+    replace_text: bool
+    corrected_observation: str = Field(description="필요할 때만 수정 관찰 한 문장")
+    corrected_feedback: str = Field(description="필요할 때만 수정 코칭 한 문장")
 
 
 class CombatVerificationResponse(BaseModel):
     events: list[CombatVerificationItem]
-    replace_summary: bool = Field(description="전체 요약에 잘못된 킬/데스 전제가 있어 수정이 필요한지")
-    corrected_summary: str = Field(description="전투 결과 검증을 반영한 전체 한국어 요약. 수정이 필요 없으면 기존 요약을 그대로 반환")
+    replace_summary: bool
+    corrected_summary: str = Field(description="필요할 때만 킬/데스 오류를 수정한 기존 요약")
 
 
 PROMPT = """
-당신은 VALORANT의 킬로그와 사망 UI를 전문적으로 판독하는 전투 결과 검증기입니다.
-요원 초상화 참조 시트와 각 이벤트의 확대 킬로그 프레임이 제공됩니다.
+당신은 VALORANT 킬로그/사망 UI 전용 검증기입니다.
+서버가 먼저 모든 주요 장면을 로컬 초상화 매칭으로 훑고, 의심도가 높은 최대 2개 장면만 이 요청에 넣었습니다.
+각 이벤트에는 KILLFEED A, KILLFEED B, FULL CONTEXT가 순서대로 제공됩니다.
 
-이미지 구성:
-- 가장 먼저 현재 VALORANT 요원 초상화 참조 시트가 1장 제공됩니다. 각 초상화 아래 영문 요원명이 적혀 있습니다.
-- 각 이벤트마다 이미지가 최대 3장 제공됩니다.
-  1) KILLFEED A: 우측 상단 킬로그만 아주 크게 확대한 단독 프레임
-  2) KILLFEED B: 약간 뒤 시점의 우측 상단 킬로그만 아주 크게 확대한 단독 프레임
-  3) FULL CONTEXT: 같은 장면의 전체 화면 연락표
-
-반드시 요원 초상화 참조 시트를 먼저 익힌 뒤 KILLFEED A/B에서 공격자와 피해자 요원 아이콘을 대조하세요.
-킬 여부는 KILLFEED A/B를 가장 중요한 직접 증거로 사용하고, FULL CONTEXT는 본인 사망/생존과 맥락 확인에 사용하세요.
-
-매우 중요한 판정 규칙:
-1. KILLFEED A 또는 B에 실제 킬로그 엔트리가 보이면 killfeed_visible=true로 하세요.
-2. POV 플레이어가 적을 죽였다고 판정하려면 다음 중 직접 증거가 있어야 합니다.
-   - 킬로그 공격자 쪽의 요원 초상화가 POV 플레이어 요원과 일치하고 방향/팀 맥락도 맞음
-   - 명확한 킬 확인 UI가 나타남
-   - 적 사망이 화면에서 직접 확인됨
-   단순 명중, 적이 화면에서 사라짐, 교전 우세만으로 kill을 추측하지 마세요.
-3. 킬로그에 여러 엔트리가 겹쳐 보여도 각 행을 따로 읽으세요. 가장 최신 행만 보고 나머지를 무시하지 마세요.
-4. 2026년 VALORANT 킬피드에는 어시스트 요원 아이콘도 추가로 보일 수 있습니다. 보조/어시스트 아이콘을 공격자 본인 아이콘으로 착각하지 마세요.
-5. 현재 POV 플레이어 요원명이 별도로 제공됩니다. 같은 팀에서는 같은 요원을 중복 선택할 수 없으므로,
-   킬로그 공격자 쪽 초상화가 POV 요원과 명확히 일치하면 본인 처치의 강한 증거입니다.
-6. 서버가 제공하는 "초상화 매칭 힌트"는 확대 킬로그 안에서 POV 요원과 비슷한 초상화가 보였다는 보조 신호입니다.
-   이 힌트만으로 kill을 확정하지 말고, 반드시 그 초상화가 공격자 쪽 행에 있는지 직접 확인하세요.
-7. 킬로그에 다른 팀원의 처치만 보이면 POV 플레이어의 kill로 계산하지 마세요.
-8. POV 플레이어가 죽었다고 판정하려면 사망 화면, Combat Report, 관전자 전환, 리스폰 전환 등 직접 증거가 필요합니다.
-   피격, 저체력, 붉은 화면, 화면 흔들림, 엄폐, 후퇴, 암전만으로 death를 판정하지 마세요.
-9. 이후 FULL CONTEXT에서도 정상 HUD/무기/체력이 유지되고 플레이가 계속되면 death가 아니라 survived 쪽을 우선합니다.
-10. 킬로그가 읽히지 않거나 증거가 충돌하면 uncertain을 사용하세요. 잘못된 확정보다 불확실 판정이 낫습니다.
-11. 기존 observation/feedback이 실제 킬로그 또는 사망 UI와 충돌하면 replace_text=true로 하고 수정하세요.
-12. 기존 문장이 본인 사망을 잘못 전제로 하면 그 전제를 제거하세요. 실제 적 처치를 놓쳤다면 킬로그 근거를 반영하세요.
-13. corrected_observation은 화면에서 직접 확인한 사실 위주 한 문장, corrected_feedback은 해당 사실에 맞는 1~2문장 코칭으로 작성하세요.
-14. 제공된 이벤트 인덱스를 그대로 반환하고 모든 이벤트를 정확히 한 번씩 반환하세요.
-15. 전체 요약에 이번 검증과 충돌하는 킬/데스 주장이 있으면 replace_summary=true로 하고 그 부분만 수정하세요.
-    Aim, Movement, Positioning, Utility 등 킬/데스와 무관한 코칭은 유지하세요.
-16. killfeed_note에는 실제로 읽은 킬로그 근거를 적으세요. 읽을 수 없으면 "확대 킬로그에서 명확한 엔트리를 확인하지 못함"이라고 적으세요.
+규칙:
+- 킬 판정은 확대 KILLFEED A/B를 최우선 증거로 사용합니다.
+- POV 플레이어 요원 초상화가 공격자 쪽에 명확히 있고 방향/팀 맥락이 맞을 때만 본인 kill의 강한 증거로 봅니다.
+- 어시스트 요원 아이콘을 공격자 아이콘으로 착각하지 마세요.
+- 단순 명중, 적이 화면에서 사라짐, 교전 우세만으로 kill을 추측하지 마세요.
+- death는 Combat Report, 관전자/리스폰 전환 등 직접 증거가 있어야 합니다. 피격/저체력/붉은 화면만으로 death라 하지 마세요.
+- 이후 정상 HUD와 무기/체력이 유지되면 survived를 우선합니다.
+- 로컬 초상화 similarity 힌트는 '해당 초상화가 이미지 어딘가에 있을 가능성'일 뿐 공격자 위치를 뜻하지 않습니다.
+- 불확실하면 uncertain을 사용합니다.
+- 기존 문장이 실제 킬/데스와 충돌할 때만 replace_text=true로 하고 짧게 수정합니다.
+- 전체 summary도 킬/데스 전제가 틀렸을 때만 수정하며 나머지 코칭은 유지합니다.
+- evidence, killfeed_note, corrected_*는 최대한 짧게 쓰세요.
 """
+
+_KILL_WORDS = (
+    "킬", "처치", "죽였", "제거", "헤드샷", "킬로그", "kill", "killed", "eliminat", "headshot",
+)
+_DEATH_WORDS = (
+    "사망", "죽었", "죽음", "데스", "combat report", "관전자", "death", "died", "dead",
+)
+_COMBAT_WORDS = (
+    "교전", "적", "총격", "피격", "에임", "aim", "fight", "duel", "enemy", "damage",
+)
 
 
 def _model_candidates() -> list[str]:
@@ -88,6 +75,63 @@ def _model_candidates() -> list[str]:
     return result
 
 
+def _text_score(event: dict) -> float:
+    text = (
+        str(event.get("observation") or "") + " " +
+        str(event.get("feedback") or "")
+    ).casefold()
+    score = 0.0
+    if any(word in text for word in _KILL_WORDS):
+        score += 3.0
+    if any(word in text for word in _DEATH_WORDS):
+        score += 3.0
+    if any(word in text for word in _COMBAT_WORDS):
+        score += 1.0
+    return score
+
+
+def _scan_portraits(events: list[dict], player_agent: str) -> dict[int, list[dict]]:
+    hints_by_event: dict[int, list[dict]] = {}
+    if not player_agent or player_agent.casefold() == "unknown":
+        return hints_by_event
+
+    for event in events[:6]:
+        idx = int(event.get("event_index", 0))
+        hints: list[dict] = []
+        for image_bytes in list(event.get("frames") or [])[:2]:
+            try:
+                hints.append(match_agent_portrait_in_killfeed(image_bytes, player_agent))
+            except Exception as exc:
+                print(f"[CombatVerifier] local portrait match skipped: {type(exc).__name__}: {exc}")
+        hints_by_event[idx] = hints
+    return hints_by_event
+
+
+def _portrait_score(hints: list[dict]) -> float:
+    if not hints:
+        return 0.0
+    similarities = [float(item.get("similarity") or 0.0) for item in hints]
+    best = max(similarities, default=0.0)
+    ready = any(bool(item.get("ready")) for item in hints)
+    # Strong local portrait matches should pull the scene toward Gemini
+    # verification even when the first-pass model forgot to mention a kill.
+    return max(0.0, best) * 3.0 + (2.5 if ready else 0.0)
+
+
+def _select_events(
+    events: list[dict],
+    portrait_hints: dict[int, list[dict]],
+) -> list[dict]:
+    ranked = []
+    for order, event in enumerate(events[:6]):
+        idx = int(event.get("event_index", order))
+        score = _text_score(event) + _portrait_score(portrait_hints.get(idx, []))
+        ranked.append((score, -order, event))
+
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [item[2] for item in ranked[:MAX_GEMINI_EVENTS]]
+
+
 def verify_combat_events(
     events: list[dict],
     summary: str = "",
@@ -97,80 +141,67 @@ def verify_combat_events(
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY_NOT_CONFIGURED")
 
-    if not events:
+    scanned_events = list(events or [])[:6]
+    if not scanned_events:
         return {
             "events": [],
             "model_used": "",
             "verified": False,
             "replace_summary": False,
             "corrected_summary": summary,
+            "local_scan_count": 0,
+            "gemini_event_count": 0,
         }
+
+    # Free/local stage: inspect all six scenes with the cached official portrait
+    # references. Only the two most suspicious scenes reach the paid Gemini call.
+    portrait_hints = _scan_portraits(scanned_events, player_agent)
+    selected_events = _select_events(scanned_events, portrait_hints)
+
+    print(
+        f"[CombatVerifier] local scan={len(scanned_events)} · "
+        f"Gemini selected={len(selected_events)} · max={MAX_GEMINI_EVENTS}"
+    )
 
     client = genai.Client(api_key=api_key)
     contents: list = [
         PROMPT,
-        f"POV 플레이어의 현재 요원: {str(player_agent or 'Unknown')[:80]}",
-        "전체 기존 요약:\n" + str(summary or "")[:1800],
+        f"POV 플레이어 요원: {str(player_agent or 'Unknown')[:80]}",
+        "기존 전체 요약:\n" + str(summary or "")[:1200],
     ]
 
-    try:
-        portrait_sheet = build_agent_portrait_reference_sheet()
-    except Exception as exc:
-        print(f"[CombatVerifier] portrait reference skipped: {type(exc).__name__}: {exc}")
-        portrait_sheet = b""
-    if portrait_sheet:
-        contents.append("VALORANT 요원 초상화 참조 시트. 이후 킬로그 아이콘을 이 시트와 대조하세요.")
-        contents.append(types.Part.from_bytes(data=portrait_sheet, mime_type="image/jpeg"))
-
-    portrait_hints: dict[int, list[dict]] = {}
-
-    for event in events[:6]:
+    for event in selected_events:
         idx = int(event.get("event_index", 0))
         timestamp = str(event.get("timestamp") or "")[:20]
-        observation = str(event.get("observation") or "")[:700]
-        feedback = str(event.get("feedback") or "")[:900]
+        observation = str(event.get("observation") or "")[:420]
+        feedback = str(event.get("feedback") or "")[:500]
         frames = list(event.get("frames") or [])[:3]
+        hints = portrait_hints.get(idx, [])
 
-        hints: list[dict] = []
-        if player_agent and player_agent.casefold() != "unknown":
-            for frame_no, image_bytes in enumerate(frames[:2]):
-                try:
-                    hint = match_agent_portrait_in_killfeed(image_bytes, player_agent)
-                except Exception as exc:
-                    print(f"[CombatVerifier] portrait match skipped: {type(exc).__name__}: {exc}")
-                    continue
-                hints.append(hint)
-        portrait_hints[idx] = hints
-
-        hint_text = ""
-        if hints:
-            formatted = ", ".join(
-                f"{chr(65 + i)} similarity={float(h.get('similarity') or 0):.3f} ready={bool(h.get('ready'))}"
-                for i, h in enumerate(hints)
-            )
-            hint_text = (
-                f"\n서버 초상화 매칭 힌트 ({player_agent}): {formatted}. "
-                "이 값은 해당 요원 초상화가 이미지 어딘가에 있는지에 대한 보조 신호일 뿐 공격자/피해자 위치를 뜻하지 않습니다."
-            )
+        formatted_hints = ", ".join(
+            f"{chr(65 + i)} sim={float(h.get('similarity') or 0):.3f} ready={bool(h.get('ready'))}"
+            for i, h in enumerate(hints[:2])
+        ) or "없음"
 
         contents.append(
-            f"이벤트 {idx} · timestamp={timestamp}\n"
+            f"이벤트 {idx} · {timestamp}\n"
             f"기존 관찰: {observation}\n"
-            f"기존 피드백: {feedback}"
-            f"{hint_text}\n"
-            "다음 이미지를 순서대로 판독하세요. 앞쪽은 큰 단독 킬로그 프레임이고 마지막은 전체 화면 맥락입니다."
+            f"기존 피드백: {feedback}\n"
+            f"로컬 POV 요원 초상화 매칭: {formatted_hints}"
         )
         for frame_no, image_bytes in enumerate(frames):
             if frame_no == 0:
-                label = "KILLFEED A · 큰 단독 확대 프레임"
+                label = "KILLFEED A"
             elif frame_no == 1:
-                label = "KILLFEED B · 뒤 시점 큰 단독 확대 프레임"
+                label = "KILLFEED B"
             else:
-                label = "FULL CONTEXT · 전체 화면 시간순 시퀀스"
+                label = "FULL CONTEXT"
             contents.append(f"이벤트 {idx} · {label}")
             contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
 
     errors_seen: list[str] = []
+    selected_indices = {int(event.get("event_index", 0)) for event in selected_events}
+
     for model in _model_candidates():
         try:
             response = client.models.generate_content(
@@ -180,7 +211,7 @@ def verify_combat_events(
                     response_mime_type="application/json",
                     response_schema=CombatVerificationResponse,
                     temperature=0.0,
-                    max_output_tokens=2000,
+                    max_output_tokens=1000,
                     media_resolution=types.MediaResolution.MEDIA_RESOLUTION_HIGH,
                     thinking_config=types.ThinkingConfig(thinking_level="minimal"),
                     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
@@ -190,12 +221,9 @@ def verify_combat_events(
                 raise RuntimeError(f"{model} empty response")
 
             parsed = CombatVerificationResponse.model_validate_json(response.text).model_dump()
-            requested_indices = {
-                int(event.get("event_index", 0)) for event in events[:6]
-            }
             filtered = [
                 item for item in parsed.get("events", [])
-                if int(item.get("event_index", -1)) in requested_indices
+                if int(item.get("event_index", -1)) in selected_indices
             ]
             return {
                 "events": filtered,
@@ -203,13 +231,16 @@ def verify_combat_events(
                 "verified": bool(filtered),
                 "replace_summary": bool(parsed.get("replace_summary")),
                 "corrected_summary": str(parsed.get("corrected_summary") or summary),
-                "portrait_reference_used": bool(portrait_sheet),
+                "portrait_reference_used": bool(portrait_hints),
                 "portrait_match_hints": portrait_hints,
+                "local_scan_count": len(scanned_events),
+                "gemini_event_count": len(selected_events),
+                "selected_event_indices": sorted(selected_indices),
+                "economy_mode": True,
             }
         except (errors.APIError, ValueError, RuntimeError) as exc:
             text = f"{model}: {type(exc).__name__}: {exc}"
             errors_seen.append(text)
             print(f"[CombatVerifier] {text}")
-            continue
 
     raise RuntimeError("COMBAT_VERIFICATION_FAILED: " + " | ".join(errors_seen[-2:]))
