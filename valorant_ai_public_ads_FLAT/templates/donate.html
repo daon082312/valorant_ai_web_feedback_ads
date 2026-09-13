@@ -42,8 +42,8 @@
         </div>
 
         <div class="donate-presets" role="group" aria-label="후원 금액 선택">
+            <button type="button" class="donate-preset" data-amount="100">100원</button>
             <button type="button" class="donate-preset" data-amount="1000">1,000원</button>
-            <button type="button" class="donate-preset" data-amount="3000">3,000원</button>
             <button type="button" class="donate-preset selected" data-amount="5000">5,000원</button>
             <button type="button" class="donate-preset" data-amount="10000">10,000원</button>
             <button type="button" class="donate-preset" data-amount="30000">30,000원</button>
@@ -57,8 +57,8 @@
                 inputmode="numeric"
                 min="{{ donation_min_amount }}"
                 max="{{ donation_max_amount }}"
-                step="1000"
-                placeholder="예: 20000"
+                step="100"
+                placeholder="예: 2000"
             >
             <span>원</span>
         </div>
