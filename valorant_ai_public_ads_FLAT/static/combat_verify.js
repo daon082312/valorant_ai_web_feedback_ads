@@ -16,7 +16,7 @@
             target.addEventListener("seeked", done, {once: true});
             timer = setTimeout(() => {
                 target.removeEventListener("seeked", done);
-                reject(new Error("전투 검증 프레임 이동 시간이 초과되었습니다."));
+                reject(new Error("HUD 검증 프레임 이동 시간이 초과되었습니다."));
             }, timeoutMs);
         });
     }
@@ -32,7 +32,7 @@
         await waitForSeek(player);
     }
 
-    function snapshotFullCanvas(maxWidth = 960) {
+    function snapshotFullCanvas(maxWidth = 1100) {
         const sourceWidth = player.videoWidth || 1280;
         const sourceHeight = player.videoHeight || 720;
         const width = Math.min(maxWidth, sourceWidth);
@@ -45,28 +45,46 @@
         return canvas;
     }
 
-    function snapshotKillfeedCanvas(mode = "full-stack", targetWidth = 1440) {
+    function snapshotBottomHudCanvas(targetWidth = 1280) {
         const sourceWidth = player.videoWidth || 1280;
         const sourceHeight = player.videoHeight || 720;
+        // Keep the complete bottom-centre ability bar, including charges/cooldowns.
+        const sx = Math.floor(sourceWidth * 0.14);
+        const sy = Math.floor(sourceHeight * 0.66);
+        const sw = Math.max(1, Math.floor(sourceWidth * 0.72));
+        const sh = Math.max(1, sourceHeight - sy);
+        const width = targetWidth;
+        const height = Math.max(1, Math.round(sh * (width / sw)));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d", {alpha: false});
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(player, sx, sy, sw, sh, 0, 0, width, height);
+        return canvas;
+    }
 
-        // Simultaneous eliminations push older killfeed rows downward. Capture
-        // a much taller region than before, then use a second crop focused on
-        // the lower half so rows 2-5 remain large enough to read.
+    function snapshotKillfeedCanvas(mode = "full-stack", targetWidth = 1500) {
+        const sourceWidth = player.videoWidth || 1280;
+        const sourceHeight = player.videoHeight || 720;
         let sx;
         let sy;
         let sw;
         let sh;
 
         if (mode === "lower-stack") {
-            sx = Math.floor(sourceWidth * 0.30);
-            sy = Math.floor(sourceHeight * 0.10);
-            sw = Math.max(1, Math.floor(sourceWidth * 0.70));
-            sh = Math.max(1, Math.floor(sourceHeight * 0.68));
+            // Older rows move downward when simultaneous kills are added above.
+            sx = Math.floor(sourceWidth * 0.27);
+            sy = Math.floor(sourceHeight * 0.08);
+            sw = Math.max(1, Math.floor(sourceWidth * 0.73));
+            sh = Math.max(1, Math.floor(sourceHeight * 0.76));
         } else {
-            sx = Math.floor(sourceWidth * 0.30);
+            // Full vertical stack: deliberately much taller than the normal feed.
+            sx = Math.floor(sourceWidth * 0.27);
             sy = 0;
-            sw = Math.max(1, Math.floor(sourceWidth * 0.70));
-            sh = Math.max(1, Math.floor(sourceHeight * 0.72));
+            sw = Math.max(1, Math.floor(sourceWidth * 0.73));
+            sh = Math.max(1, Math.floor(sourceHeight * 0.80));
         }
 
         const width = targetWidth;
@@ -81,20 +99,33 @@
         return canvas;
     }
 
-    function canvasToJpeg(canvas, quality = 0.88) {
+    function canvasToJpeg(canvas, quality = 0.9) {
         return canvas.toDataURL("image/jpeg", quality);
     }
 
-    function buildFullContextSheet(samples) {
+    function drawContained(ctx, source, x, y, width, height) {
+        const scale = Math.min(width / source.width, height / source.height);
+        const drawWidth = source.width * scale;
+        const drawHeight = source.height * scale;
+        const dx = x + (width - drawWidth) / 2;
+        const dy = y + (height - drawHeight) / 2;
+        ctx.drawImage(source, dx, dy, drawWidth, drawHeight);
+    }
+
+    function buildFullHudContextSheet(samples) {
+        // Every temporal cell shows BOTH the whole fight and a large bottom-HUD
+        // crop. This lets Gemini compare official ability icons across time.
         const columns = 2;
         const rows = Math.ceil(samples.length / columns);
-        const cellWidth = 430;
-        const imageHeight = 242;
-        const labelHeight = 28;
-        const gap = 8;
+        const cellWidth = 520;
+        const fullHeight = 292;
+        const hudHeight = 176;
+        const labelHeight = 30;
+        const gap = 10;
+        const cellHeight = fullHeight + hudHeight + labelHeight + 8;
         const sheet = document.createElement("canvas");
         sheet.width = columns * cellWidth + (columns + 1) * gap;
-        sheet.height = rows * (imageHeight + labelHeight) + (rows + 1) * gap;
+        sheet.height = rows * cellHeight + (rows + 1) * gap;
         const ctx = sheet.getContext("2d", {alpha: false});
         ctx.fillStyle = "#07090d";
         ctx.fillRect(0, 0, sheet.width, sheet.height);
@@ -105,24 +136,27 @@
             const col = index % columns;
             const row = Math.floor(index / columns);
             const x = gap + col * (cellWidth + gap);
-            const y = gap + row * (imageHeight + labelHeight + gap);
-            const source = sample.full;
+            const y = gap + row * (cellHeight + gap);
 
             ctx.fillStyle = "#111722";
-            ctx.fillRect(x, y, cellWidth, imageHeight);
-            const scale = Math.min(cellWidth / source.width, imageHeight / source.height);
-            const drawWidth = source.width * scale;
-            const drawHeight = source.height * scale;
-            const dx = x + (cellWidth - drawWidth) / 2;
-            const dy = y + (imageHeight - drawHeight) / 2;
-            ctx.drawImage(source, dx, dy, drawWidth, drawHeight);
+            ctx.fillRect(x, y, cellWidth, fullHeight);
+            drawContained(ctx, sample.full, x, y, cellWidth, fullHeight);
+
+            const hudY = y + fullHeight + 4;
+            ctx.fillStyle = "#0c1119";
+            ctx.fillRect(x, hudY, cellWidth, hudHeight);
+            drawContained(ctx, sample.hud, x, hudY, cellWidth, hudHeight);
 
             ctx.fillStyle = "#ffffff";
             const sign = sample.offset >= 0 ? "+" : "";
-            ctx.fillText(`FULL ${sign}${sample.offset.toFixed(2)}s`, x + 8, y + imageHeight + labelHeight / 2);
+            ctx.fillText(
+                `FULL + ENLARGED ABILITY HUD ${sign}${sample.offset.toFixed(2)}s`,
+                x + 8,
+                hudY + hudHeight + labelHeight / 2
+            );
         });
 
-        return sheet.toDataURL("image/jpeg", 0.74);
+        return sheet.toDataURL("image/jpeg", 0.86);
     }
 
     async function captureVerificationFrames(events) {
@@ -145,43 +179,41 @@
             for (let index = 0; index < Math.min(events.length, 6); index += 1) {
                 const event = events[index];
                 const center = timestampToSeconds(event.timestamp);
-
-                // The main-model timestamp can be off by ~1 second. Capture a
-                // wider temporal window, including a later point where a POV kill
-                // may have been pushed down by other simultaneous eliminations.
-                const offsets = [-0.45, 0.15, 0.65, 1.20, 1.75];
+                // Dense enough to show HUD state before/after a cast and to keep
+                // killfeed rows visible after simultaneous kills shift them down.
+                const offsets = [-0.55, 0.10, 0.55, 1.15, 1.80];
                 const samples = [];
 
                 for (const offset of offsets) {
                     await seekTo(center + offset);
                     samples.push({
                         offset,
-                        full: snapshotFullCanvas(960),
-                        killfeedFull: snapshotKillfeedCanvas("full-stack", 1440),
-                        killfeedLower: snapshotKillfeedCanvas("lower-stack", 1440)
+                        full: snapshotFullCanvas(1100),
+                        hud: snapshotBottomHudCanvas(1280),
+                        killfeedFull: snapshotKillfeedCanvas("full-stack", 1500),
+                        killfeedLower: snapshotKillfeedCanvas("lower-stack", 1500)
                     });
                 }
 
-                // A: early full stack catches the new entry near the top.
-                // B: later lower-stack crop catches the same POV kill after
-                // simultaneous kills push it several rows downward.
-                const killfeedA = canvasToJpeg(samples[1].killfeedFull, 0.91);
-                const killfeedB = canvasToJpeg(samples[3].killfeedLower, 0.91);
-                const fullSheet = buildFullContextSheet(samples);
+                // A catches the fresh top entry. B is later and deliberately
+                // lower/taller, catching the same row after other kills push it.
+                const killfeedA = canvasToJpeg(samples[1].killfeedFull, 0.92);
+                const killfeedB = canvasToJpeg(samples[3].killfeedLower, 0.92);
+                const fullHudSheet = buildFullHudContextSheet(samples);
 
                 payloadEvents.push({
                     event_index: index,
                     timestamp: String(event.timestamp || ""),
                     observation: String(event.observation || ""),
                     feedback: String(event.feedback || ""),
-                    frames: [killfeedA, killfeedB, fullSheet]
+                    frames: [killfeedA, killfeedB, fullHudSheet]
                 });
             }
         } finally {
             try {
                 await seekTo(originalTime);
             } catch (_) {
-                // Restoring the preview position is optional.
+                // Preview restoration is optional.
             }
             if (!wasPaused) {
                 player.play().catch(() => {});
@@ -209,16 +241,41 @@
             })
         });
 
-        const body = await readJsonResponse(response, "전투 결과 검증 서버");
+        const body = await readJsonResponse(response, "HUD 검증 서버");
         if (!response.ok) {
-            throw new Error(body.detail || `전투 결과 검증 실패 (HTTP ${response.status})`);
+            throw new Error(body.detail || `HUD 검증 실패 (HTTP ${response.status})`);
         }
         return body;
     }
 
-    function applyCombatVerification(data, verification) {
+    function applyUnifiedVerification(data, verification) {
         const events = Array.isArray(data?.events) ? data.events : [];
         const items = Array.isArray(verification?.events) ? verification.events : [];
+
+        // The dedicated high-resolution HUD verifier has priority over the
+        // low-resolution whole-video agent guess when it has useful evidence.
+        const verifiedAgent = String(verification?.agent || "").trim();
+        const agentConfidence = Math.max(0, Math.min(1, Number(verification?.agent_confidence || 0)));
+        if (verification?.unified_hud_verification && verification?.portrait_reference_used) {
+            data.agent_prediction_before_hud_verification = data.agent_prediction || null;
+            if (verifiedAgent && verifiedAgent !== "Unknown" && agentConfidence >= 0.55) {
+                data.agent_prediction = {
+                    agent: verifiedAgent,
+                    confidence: agentConfidence,
+                    reason: String(verification.agent_evidence || "공식 HUD 아이콘 참조표와 확대 능력 HUD로 재검증했습니다."),
+                    hud_verified: true,
+                    original_agent: data.agent_prediction_before_hud_verification?.agent || "Unknown"
+                };
+            } else if (verifiedAgent === "Unknown") {
+                data.agent_prediction = {
+                    agent: "Unknown",
+                    confidence: agentConfidence,
+                    reason: String(verification.agent_evidence || "확대 HUD에서도 요원을 확정할 근거가 부족했습니다."),
+                    hud_verified: true,
+                    original_agent: data.agent_prediction_before_hud_verification?.agent || "Unknown"
+                };
+            }
+        }
 
         for (const item of items) {
             const index = Number(item.event_index);
@@ -233,6 +290,24 @@
             event.killfeed_visible = Boolean(item.killfeed_visible);
             event.killfeed_supports_pov_kill = Boolean(item.killfeed_supports_pov_kill);
             event.killfeed_note = String(item.killfeed_note || "");
+
+            const abilityConfidence = Math.max(0, Math.min(1, Number(item.ability_confidence || 0)));
+            const verifiedAbility = String(item.ability_name || "").trim();
+            event.hud_ability_verified = true;
+            event.hud_ability_confidence = abilityConfidence;
+            event.hud_ability_evidence = String(item.ability_evidence || "");
+            if (verifiedAbility && abilityConfidence >= 0.58) {
+                event.original_ability_name_before_hud_verification = event.ability_name || null;
+                event.ability_name = verifiedAbility;
+                event.ability_confidence = abilityConfidence;
+            } else if (!verifiedAbility && abilityConfidence <= 0.35) {
+                // Prefer 'unknown' over preserving a low-confidence hallucinated skill.
+                if (Number(event.ability_confidence || 0) < 0.75) {
+                    event.original_ability_name_before_hud_verification = event.ability_name || null;
+                    event.ability_name = null;
+                    event.ability_confidence = 0;
+                }
+            }
 
             if (item.replace_text && confidence >= 0.62) {
                 const correctedObservation = String(item.corrected_observation || "").trim();
@@ -255,6 +330,8 @@
         data.combat_verification_used = Boolean(verification?.verified && items.length);
         data.combat_verification_model = verification?.model_used || "";
         data.combat_portrait_reference_used = Boolean(verification?.portrait_reference_used);
+        data.hud_verification_used = Boolean(verification?.unified_hud_verification);
+        data.hud_verification_token_usage = verification?.token_usage || {};
         return data;
     }
 
@@ -288,20 +365,32 @@
             const killfeedBadge = document.createElement("span");
             killfeedBadge.className = "badge";
             killfeedBadge.textContent = event.killfeed_visible
-                ? (event.killfeed_supports_pov_kill ? "킬로그 · 본인 처치 확인" : "킬로그 · 확인됨")
+                ? (event.killfeed_supports_pov_kill ? "킬로그 · 본인 처치 확인" : "킬로그 · 다른/불명확 행 확인")
                 : "킬로그 · 확인 안 됨";
 
             const portraitBadge = document.createElement("span");
             portraitBadge.className = "badge";
             portraitBadge.textContent = data.combat_portrait_reference_used
-                ? "요원 초상화 대조 · 적용"
-                : "요원 초상화 대조 · 생략";
+                ? "실제 Killfeed 초상화 · 대조"
+                : "UI 참조표 · 생략";
+
+            row.append(badge, killfeedBadge, portraitBadge);
+
+            if (event.hud_ability_verified) {
+                const abilityBadge = document.createElement("span");
+                abilityBadge.className = "badge";
+                const ac = Math.round(Number(event.hud_ability_confidence || 0) * 100);
+                abilityBadge.textContent = event.ability_name
+                    ? `스킬 검증 · ${event.ability_name} · ${ac}%`
+                    : `스킬 검증 · 불확실 · ${ac}%`;
+                row.appendChild(abilityBadge);
+            }
 
             const evidence = document.createElement("span");
             evidence.className = "muted";
-            evidence.textContent = event.killfeed_note || event.combat_evidence || "";
+            evidence.textContent = event.killfeed_note || event.hud_ability_evidence || event.combat_evidence || "";
+            row.appendChild(evidence);
 
-            row.append(badge, killfeedBadge, portraitBadge, evidence);
             const head = box.querySelector(".event-head");
             if (head?.nextSibling) {
                 box.insertBefore(row, head.nextSibling);
@@ -317,7 +406,7 @@
 
         try {
             if (statusBoxEl) {
-                statusBoxEl.textContent = "동시 킬로 아래로 밀린 킬로그까지 확대해 재검증하는 중...";
+                statusBoxEl.textContent = "공식 요원·스킬 UI와 전체 킬로그를 고해상도로 재검증하는 중...";
             }
             const verification = await requestCombatVerification(data);
             if (!verification?.verified) {
@@ -325,7 +414,17 @@
                 return;
             }
 
-            applyCombatVerification(data, verification);
+            applyUnifiedVerification(data, verification);
+
+            if (typeof fetchAgentKit === "function") {
+                try {
+                    currentAgentAbilities = await fetchAgentKit(data.agent_prediction?.agent || "");
+                    data.agent_ability_catalog = currentAgentAbilities;
+                } catch (_) {
+                    // UI rendering can continue even if catalog refresh fails.
+                }
+            }
+
             originalRenderResult(data);
             decorateCombatRows(data);
 
@@ -334,11 +433,11 @@
             }
 
             if (statusBoxEl) {
-                const base = `분석 완료 · ${data.model_used || "Gemini"} · 전체+하단 킬로그 검증 완료`;
+                const base = `분석 완료 · ${data.model_used || "Gemini"} · 요원/스킬/킬 HUD 재검증 완료`;
                 statusBoxEl.textContent = data.usage?.premium ? `${base} · PREMIUM` : base;
             }
         } catch (error) {
-            console.warn("전투 결과 재검증 생략", error);
+            console.warn("HUD 통합 재검증 생략", error);
             data.combat_verification_used = false;
             data.combat_verification_error = String(error?.message || error || "verification_failed");
         }
