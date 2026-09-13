@@ -82,10 +82,8 @@ score는 치트 사용 확률이 아닙니다.
 
 
 def _model_candidates() -> list[str]:
-    requested = os.getenv("CHEAT_VERIFIER_MODEL", "gemini-3.1-flash-lite").strip().removeprefix("models/")
-    result = [requested or "gemini-3.1-flash-lite"]
-    if os.getenv("CHEAT_ALLOW_QUALITY_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}:
-        result.append("gemini-3.5-flash-lite")
+    requested = os.getenv("CHEAT_VERIFIER_MODEL", "gemini-3.5-flash-lite").strip().removeprefix("models/")
+    result = [requested or "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
     return list(dict.fromkeys(x for x in result if x))
 
 
@@ -130,8 +128,6 @@ def _aggregate(items: list[dict]) -> dict:
         if str(sig) and str(sig) != "none"
     }
 
-    # A single extremely abnormal event may be suspicious, but a strong label
-    # still requires repetition across independent scenes.
     if len(high) >= 2 and len(signal_set) >= 1:
         rating = "strongly_suspicious"
     elif len(very_high) >= 1 or len(moderate) >= 2 or len(high) >= 1:
