@@ -121,7 +121,7 @@ def _float_env(name: str, default: float, minimum: float, maximum: float) -> flo
     return max(minimum, min(maximum, value))
 
 
-ANALYSIS_VIDEO_FPS = _float_env("ANALYSIS_VIDEO_FPS", 0.5, 0.25, 1.0)
+ANALYSIS_VIDEO_FPS = _float_env("ANALYSIS_VIDEO_FPS", 1.0, 0.25, 1.0)
 ANALYSIS_MAX_OUTPUT_TOKENS = int(os.getenv("ANALYSIS_MAX_OUTPUT_TOKENS", "1500"))
 
 
