@@ -17,7 +17,7 @@ TOSS_CLIENT_KEY = os.getenv("TOSS_CLIENT_KEY", "").strip()
 TOSS_SECRET_KEY = os.getenv("TOSS_SECRET_KEY", "").strip()
 TOSS_API_BASE = "https://api.tosspayments.com"
 
-DONATION_MIN_AMOUNT = int(os.getenv("DONATION_MIN_AMOUNT", "1000"))
+DONATION_MIN_AMOUNT = int(os.getenv("DONATION_MIN_AMOUNT", "100"))
 DONATION_MAX_AMOUNT = int(os.getenv("DONATION_MAX_AMOUNT", "500000"))
 DONATION_ORDER_NAME = os.getenv("DONATION_ORDER_NAME", "VALORANT AI Coach 후원").strip() or "VALORANT AI Coach 후원"
 
