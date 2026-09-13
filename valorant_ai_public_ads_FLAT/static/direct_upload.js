@@ -91,32 +91,15 @@
                 {allowFallback: true}
             );
         }
-
-        let payload = {};
-        try {
-            const text = await response.text();
-            payload = text ? JSON.parse(text) : {};
-        } catch (error) {
-            throw new DirectUploadError("Gemini 업로드 결과를 읽지 못했습니다.", {allowFallback: true});
-        }
-
-        const fileName = String(payload?.file?.name || "").trim();
-        if (!fileName.startsWith("files/")) {
-            throw new DirectUploadError("Gemini 파일 ID가 반환되지 않았습니다.", {allowFallback: true});
-        }
-        return fileName;
     }
 
-    async function analyzeUploadedGeminiFile(ticketId, fileName) {
+    async function analyzeUploadedGeminiFile(ticketId) {
         statusBox.textContent = "직접 업로드 완료 · Gemini AI가 영상을 분석하는 중...";
         const response = await fetch("/analysis/direct", {
             method: "POST",
             credentials: "same-origin",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({
-                ticket_id: ticketId,
-                file_name: fileName
-            })
+            body: JSON.stringify({ticket_id: ticketId})
         });
         const data = await readJsonResponse(response, "직접 분석 서버");
         if (!response.ok) {
@@ -128,8 +111,8 @@
 
     async function analyzeViaDirectUpload(file) {
         const session = await startDirectUpload(file);
-        const fileName = await uploadFileToGemini(file, session);
-        return await analyzeUploadedGeminiFile(session.ticket_id, fileName);
+        await uploadFileToGemini(file, session);
+        return await analyzeUploadedGeminiFile(session.ticket_id);
     }
 
     async function analyzeViaRenderFallback(file) {
