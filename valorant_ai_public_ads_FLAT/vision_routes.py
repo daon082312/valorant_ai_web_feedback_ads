@@ -7,7 +7,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from cheat_verifier import verify_cheat_suspicion
 from combat_verifier import verify_combat_events
 from valorant_reference import catalog_payload
 from vision_learning import (
@@ -40,7 +39,6 @@ class CombatEventRequest(BaseModel):
     timestamp: str = Field(default="", max_length=20)
     observation: str = Field(default="", max_length=1000)
     feedback: str = Field(default="", max_length=1400)
-    dense_motion_strip: bool = False
     frames: list[str] = Field(min_length=2, max_length=3)
 
 
@@ -140,7 +138,6 @@ def build_vision_router(get_auth_context, attach_refreshed_session, public_base_
                     "timestamp": event.timestamp,
                     "observation": event.observation,
                     "feedback": event.feedback,
-                    "dense_motion_strip": bool(event.dense_motion_strip),
                     "frames": frames,
                 })
 
@@ -150,27 +147,6 @@ def build_vision_router(get_auth_context, attach_refreshed_session, public_base_
                 payload.summary,
                 payload.player_agent,
             )
-
-            # Cheat suspicion is intentionally verified in a second, dedicated
-            # low-cost model call. Mixing HUD/kill/agent tasks with cheat
-            # detection made the latter too conservative and easy to miss.
-            try:
-                dedicated_cheat = await asyncio.to_thread(
-                    verify_cheat_suspicion,
-                    decoded_events,
-                )
-                result["cheat_assessment"] = dedicated_cheat
-                result["cheat_suspicion_verification"] = True
-                result["dedicated_cheat_verifier"] = True
-                result["cheat_verification_model"] = dedicated_cheat.get("model_used", "")
-                result["cheat_verification_token_usage"] = dedicated_cheat.get("token_usage", {})
-            except Exception as exc:
-                # Keep the first-pass assessment rather than failing the whole
-                # analysis if the dedicated verifier is temporarily unavailable.
-                print(f"[CheatVerifier] dedicated verification skipped: {type(exc).__name__}: {exc}")
-                result["dedicated_cheat_verifier"] = False
-                result["cheat_verification_error"] = type(exc).__name__
-
             response = JSONResponse(result)
             return attach_refreshed_session(response, auth)
         except ValueError as exc:
