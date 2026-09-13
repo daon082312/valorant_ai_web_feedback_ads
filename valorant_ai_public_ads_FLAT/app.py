@@ -284,9 +284,49 @@ def _auth_redirect_url(request: Request) -> str:
     return f"{base}/login?verified=1"
 
 
-def _render_auth(request: Request, mode: str, *, error: str = "", message: str = "", status_code: int = 200):
+def _classify_signup_error(exc: Exception) -> tuple[str, int]:
+    text = str(exc or "").strip()
+    code = str(getattr(exc, "code", "") or "").strip()
+    combined = f"{code} {text}".casefold()
+
+    if any(key in combined for key in ("already registered", "user_already_exists", "already been registered")):
+        return "이미 가입된 이메일입니다. 로그인해 주세요.", 400
+    if any(key in combined for key in ("rate limit", "over_email_send_rate_limit", "email rate limit")):
+        return "인증 이메일 발송 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.", 429
+    if any(key in combined for key in ("signup is disabled", "signups not allowed", "signup_disabled", "email signups are disabled")):
+        return "현재 신규 회원가입이 비활성화되어 있습니다. 관리자에게 Supabase Auth의 회원가입 허용 설정을 확인해 달라고 알려주세요.", 503
+    if any(key in combined for key in ("captcha", "captcha verification")):
+        return "회원가입 보안 인증(CAPTCHA) 설정 때문에 가입 요청이 거절되었습니다. 관리자 설정을 확인해 주세요.", 503
+    if any(key in combined for key in ("database error", "database_error", "saving new user", "error saving new user")):
+        return "회원 계정을 저장하는 데이터베이스 단계에서 오류가 발생했습니다. 관리자에게 Supabase Auth 로그와 사용자 생성 트리거를 확인해 달라고 알려주세요.", 503
+    if any(key in combined for key in ("invalid email", "email_address_invalid", "unable to validate email", "invalid format")):
+        return "사용할 수 없는 이메일 주소 형식입니다. 이메일 주소를 다시 확인해 주세요.", 400
+    if any(key in combined for key in ("password", "weak", "leaked", "known to be weak")):
+        return "비밀번호가 현재 보안 기준을 충족하지 않습니다. 8자 이상으로 하고 영문 대·소문자, 숫자, 특수문자를 섞은 새 비밀번호를 사용해 주세요.", 400
+    if any(key in combined for key in ("redirect", "redirect_to", "not allowed")):
+        return "이메일 인증 후 돌아올 사이트 주소가 Supabase에서 허용되지 않았습니다. 관리자에게 Redirect URL 설정을 확인해 달라고 알려주세요.", 503
+    if any(key in combined for key in ("timed out", "timeout", "connection", "network")):
+        return "회원가입 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.", 503
+
+    return "회원가입 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요. 계속 실패하면 관리자에게 발생 시각을 알려주세요.", 400
+
+
+def _render_auth(
+    request: Request,
+    mode: str,
+    *,
+    error: str = "",
+    message: str = "",
+    email_value: str = "",
+    status_code: int = 200,
+):
     context = common_context(request, adblock_enabled=False)
-    context.update({"mode": mode, "error": error, "message": message})
+    context.update({
+        "mode": mode,
+        "error": error,
+        "message": message,
+        "email_value": email_value,
+    })
     return templates.TemplateResponse(
         request=request,
         name="auth.html",
@@ -349,8 +389,22 @@ async def signup(request: Request, email: str = Form(...), password: str = Form(
         return _render_auth(request, "signup", error="로그인 시스템이 아직 설정되지 않았습니다.", status_code=503)
 
     email = email.strip().lower()
+    if not email or "@" not in email or email.startswith("@") or email.endswith("@"):
+        return _render_auth(
+            request,
+            "signup",
+            error="올바른 이메일 주소를 입력해 주세요.",
+            email_value=email,
+            status_code=400,
+        )
     if len(password) < 8:
-        return _render_auth(request, "signup", error="비밀번호는 8자 이상이어야 합니다.", status_code=400)
+        return _render_auth(
+            request,
+            "signup",
+            error="비밀번호는 8자 이상이어야 합니다.",
+            email_value=email,
+            status_code=400,
+        )
 
     try:
         response = _auth_client().auth.sign_up({
@@ -365,15 +419,20 @@ async def signup(request: Request, email: str = Form(...), password: str = Form(
             return redirect
         return RedirectResponse(url="/login?registered=1", status_code=303)
     except Exception as exc:
-        text = str(exc)
-        lowered = text.lower()
-        if "already registered" in lowered:
-            message = "이미 가입된 이메일입니다. 로그인해 주세요."
-        elif "rate limit" in lowered:
-            message = "인증 이메일 발송 한도에 도달했습니다. 잠시 후 다시 시도해 주세요."
-        else:
-            message = "회원가입에 실패했습니다. 이메일 주소와 비밀번호를 확인해 주세요."
-        return _render_auth(request, "signup", error=message, status_code=400)
+        raw_code = str(getattr(exc, "code", "") or "")
+        raw_text = str(exc or "")
+        print(
+            "[Auth] signup error · "
+            f"type={type(exc).__name__} · code={raw_code[:120]} · detail={raw_text[:600]}"
+        )
+        message, status_code = _classify_signup_error(exc)
+        return _render_auth(
+            request,
+            "signup",
+            error=message,
+            email_value=email,
+            status_code=status_code,
+        )
 
 
 @app.post("/auth/login")
