@@ -13,26 +13,31 @@
   "save_training_frames": false,
   "training_frame_interval_ms": 120,
   "monitor_index": 1,
-  "record_fight_clips": false,
-  "fight_clip_pre_seconds": 4.0,
-  "fight_clip_post_seconds": 1.5,
-  "fight_record_buffer_seconds": 30.0,
-  "fight_record_jpeg_quality": 58,
   "skill_pre_fight_seconds": 4.0,
   "skill_post_fight_seconds": 1.5,
   "skill_bindings": {
-    "skill1": {"label": "1번 스킬", "key": "q"},
-    "skill2": {"label": "2번 스킬", "key": "e"},
-    "skill3": {"label": "3번 스킬", "key": "c"},
-    "ultimate": {"label": "궁극기", "key": "x"}
+    "skill1": {
+      "label": "1번 스킬",
+      "key": "q"
+    },
+    "skill2": {
+      "label": "2번 스킬",
+      "key": "e"
+    },
+    "skill3": {
+      "label": "3번 스킬",
+      "key": "c"
+    },
+    "ultimate": {
+      "label": "궁극기",
+      "key": "x"
+    }
   },
   "local_ai_enabled": true,
   "ollama_url": "http://127.0.0.1:11434",
   "ollama_model": "qwen3:4b",
   "ollama_timeout_seconds": 45,
   "chat_history_messages": 10,
-  "clip_retention_hours": 24,
-  "auto_delete_old_videos": true,
   "language": "ko",
   "ui_font_family": "Pretendard",
   "vision_analysis_fps": 3,
@@ -40,24 +45,32 @@
   "ally_outline_color": "cyan",
   "vision_min_component_area": 16,
   "show_vision_boxes_in_preview": true,
-  "minimap_roi": {"x": 0.0, "y": 0.0, "w": 0.3, "h": 0.36},
+  "minimap_roi": {
+    "x": 0.0,
+    "y": 0.0,
+    "w": 0.3,
+    "h": 0.36
+  },
   "minimap_enemy_color": "red",
   "minimap_ally_color": "cyan",
   "preview_fps": 5,
-  "record_buffer_fps": 6,
-  "record_width": 720,
   "skill_hud_use_detection": true,
   "skill_hud_detection_fps": 8,
   "skill_hud_change_threshold": 8.0,
   "skill_hud_confirm_window_seconds": 1.15,
   "skill_hud_event_cooldown_seconds": 1.0,
-  "shot_hud_detection": true,
-  "shot_hud_detection_fps": 12,
-  "shot_hud_change_threshold": 0.55,
-  "shot_hud_max_change": 18.0,
-  "shot_hud_event_cooldown_seconds": 0.055,
-  "shot_hud_candidate_window_seconds": 0.45,
-  "ammo_hud_roi": {"x": 0.865, "y": 0.835, "w": 0.115, "h": 0.125},
+  "ammo_hud_detection": true,
+  "ammo_hud_detection_fps": 12,
+  "ammo_hud_min_confidence": 0.53,
+  "ammo_hud_roi": {
+    "x": 0.875,
+    "y": 0.865,
+    "w": 0.115,
+    "h": 0.12
+  },
+  "video_review_fps": 6,
+  "video_skill_change_threshold": 11.0,
+  "video_skill_cooldown_seconds": 1.4,
   "game_mode_auto_detection": true,
   "game_mode_override": "auto",
   "game_mode_detection_fps": 3,
