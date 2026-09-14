@@ -1,6 +1,6 @@
 {
   "language": "ko",
-  "video_review_fps": 4,
+  "video_review_fps": 8,
   "video_skill_change_threshold": 11.0,
   "video_skill_cooldown_seconds": 1.4,
   "enemy_outline_color": "red",
