@@ -25,7 +25,13 @@ class CombatEvent:
 
 
 class CombatEventDetector:
-    """Conservative screen-only detector for the local player's kill/death."""
+    """Conservative screen-only detector for *the local player's* kill/death.
+
+    Kill: uses the local center kill-confirm marker. Recent gunfire is only a
+    confidence boost, so ability/environmental credited kills can still count.
+    Death: requires the local combat-report change together with disappearance of
+    the local ammo/gameplay HUD after it had recently been visible.
+    """
 
     def __init__(self, config: dict):
         self._lock = threading.Lock()
@@ -45,6 +51,7 @@ class CombatEventDetector:
     def clear(self) -> None:
         self._last_process_ts = 0.0
         self._kill_base = None
+        self._kill_core_base = None
         self._death_base = None
         self._kill_noise = 1.5
         self._death_noise = 1.8
@@ -100,10 +107,15 @@ class CombatEventDetector:
             return []
         self._last_process_ts = ts
 
+        # Local player's center kill-confirm area; deliberately excludes top-right global killfeed.
+        # Two nested ROIs make a generic HUD animation less likely to become a kill.
         kill = self._crop(frame_bgr, 0.455, 0.605, 0.090, 0.150, (72, 76))
+        kill_core = self._crop(frame_bgr, 0.476, 0.640, 0.048, 0.082, (48, 48))
+        # Right-side combat report that appears on the local player's death.
         death = self._crop(frame_bgr, 0.72, 0.18, 0.27, 0.66, (96, 112))
+        # Local ammo HUD: present while alive/in-control, normally disappears on death/spectate transition.
         ammo = self._crop(frame_bgr, 0.855, 0.835, 0.14, 0.16, (80, 64))
-        if kill is None or death is None or ammo is None:
+        if kill is None or kill_core is None or death is None or ammo is None:
             return []
 
         ammo_content = self._hud_content(ammo)
@@ -115,33 +127,48 @@ class CombatEventDetector:
         out: list[CombatEvent] = []
         if self._kill_base is None:
             self._kill_base = kill.copy()
+            self._kill_core_base = kill_core.copy()
         if self._death_base is None:
             self._death_base = death.copy()
 
         kill_change = self._change(self._kill_base, kill)
+        kill_core_change = self._change(getattr(self, "_kill_core_base", None), kill_core)
         death_change = self._change(self._death_base, death)
         kill_edges = self._edge_density(kill)
+        kill_core_edges = self._edge_density(kill_core)
         death_edges = self._edge_density(death)
 
-        if not recent_fire and self._kill_evidence == 0:
-            self._kill_base = cv2.addWeighted(self._kill_base, 0.95, kill, 0.05, 0)
-            self._kill_noise = self._kill_noise * 0.95 + min(kill_change, 8.0) * 0.05
+        if self._kill_evidence == 0 and kill_change < max(self.kill_threshold, self._kill_noise * 3.0):
+            self._kill_base = cv2.addWeighted(self._kill_base, 0.96, kill, 0.04, 0)
+            self._kill_core_base = cv2.addWeighted(self._kill_core_base, 0.96, kill_core, 0.04, 0)
+            self._kill_noise = self._kill_noise * 0.96 + min(kill_change, 8.0) * 0.04
         if self._death_evidence == 0 and alive_hud and death_change < max(self.death_threshold, self._death_noise * 3.0):
             self._death_base = cv2.addWeighted(self._death_base, 0.98, death, 0.02, 0)
             self._death_noise = self._death_noise * 0.96 + min(death_change, 9.0) * 0.04
 
-        kill_gate = max(self.kill_threshold, self._kill_noise * 3.4 + 1.8)
-        if recent_fire and ts - self._last_kill_ts >= self.kill_cooldown and kill_change >= kill_gate and kill_edges >= 0.060:
+        kill_gate = max(self.kill_threshold, self._kill_noise * 3.5 + 2.0)
+        core_gate = max(6.5, kill_gate * 0.58)
+        self_kill_marker = (
+            ts - self._last_kill_ts >= self.kill_cooldown
+            and kill_change >= kill_gate
+            and kill_core_change >= core_gate
+            and kill_edges >= 0.060
+            and kill_core_edges >= 0.075
+        )
+        if self_kill_marker:
             self._kill_evidence += 1
         else:
             self._kill_evidence = max(0, self._kill_evidence - 1)
 
         if self._kill_evidence >= 2:
-            conf = min(0.98, 0.64 + (kill_change - kill_gate) / 34.0 + min(0.10, kill_edges))
-            out.append(CombatEvent(ts, "kill", round(max(0.58, conf), 3), round(kill_change, 2), "self_kill_confirm"))
+            fire_boost = 0.07 if recent_fire else 0.0
+            conf = min(0.98, 0.66 + fire_boost + (kill_change - kill_gate) / 38.0 + min(0.10, kill_core_edges))
+            source = "self_kill_confirm_gun" if recent_fire else "self_kill_confirm_nonfire"
+            out.append(CombatEvent(ts, "kill", round(max(0.60, conf), 3), round(kill_change, 2), source))
             self._last_kill_ts = ts
             self._kill_evidence = 0
             self._kill_base = kill.copy()
+            self._kill_core_base = kill_core.copy()
 
         death_gate = max(self.death_threshold, self._death_noise * 3.5 + 2.5)
         self_death_transition = recently_alive and not alive_hud
