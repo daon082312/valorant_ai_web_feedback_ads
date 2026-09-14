@@ -1,7 +1,5 @@
 opencv-python>=4.10,<5
-mss>=10.0,<11
 numpy>=2.0,<3
-pynput>=1.7,<2
 Pillow>=10,<12
-pyinstaller>=6.10,<7
 customtkinter>=5.2,<6
+pyinstaller>=6.10,<7
