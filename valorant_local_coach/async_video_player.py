@@ -16,7 +16,7 @@ class AsyncVideoDecoder:
 
     def __init__(self, max_display_fps: float = 24.0):
         self.max_display_fps = max(8.0, min(30.0, float(max_display_fps)))
-        self.messages: queue.Queue[tuple] = queue.Queue(maxsize=4)
+        self.messages: queue.Queue[tuple] = queue.Queue(maxsize=64)
         self.commands: queue.Queue[tuple] = queue.Queue()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -73,24 +73,41 @@ class AsyncVideoDecoder:
             return
 
     def _publish(self, message: tuple) -> None:
-        if message and message[0] == "frame":
+        """Publish without allowing disposable frames to evict control metadata."""
+        if not message:
+            return
+        kind = message[0]
+        if kind == "frame":
+            try:
+                self.messages.put_nowait(message)
+            except queue.Full:
+                pass
+            return
+        try:
+            self.messages.put_nowait(message)
+            return
+        except queue.Full:
+            pass
+        kept: list[tuple] = []
+        removed_frame = False
+        try:
             while True:
-                try:
-                    self.messages.put_nowait(message)
-                    return
-                except queue.Full:
-                    try:
-                        self.messages.get_nowait()
-                    except queue.Empty:
-                        return
+                item = self.messages.get_nowait()
+                if not removed_frame and item and item[0] == "frame":
+                    removed_frame = True
+                    continue
+                kept.append(item)
+        except queue.Empty:
+            pass
+        for item in kept:
+            try:
+                self.messages.put_nowait(item)
+            except queue.Full:
+                break
         try:
             self.messages.put_nowait(message)
         except queue.Full:
-            try:
-                self.messages.get_nowait()
-                self.messages.put_nowait(message)
-            except Exception:
-                pass
+            pass
 
     def _worker(self, path: str) -> None:
         cap = cv2.VideoCapture(path)
