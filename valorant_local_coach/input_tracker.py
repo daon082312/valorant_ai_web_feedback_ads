@@ -9,25 +9,49 @@ from pynput import keyboard, mouse
 
 
 MOVE_KEYS = {"w", "a", "s", "d"}
+OPPOSITE_KEYS = {"a": "d", "d": "a", "w": "s", "s": "w"}
+
+
+@dataclass(slots=True)
+class KeyEvent:
+    timestamp: float
+    key: str
+    pressed: bool
+    keys: tuple[str, ...]
 
 
 @dataclass(slots=True)
 class ShotEvent:
     timestamp: float
     moving: bool
+    walking: bool
+    crouching: bool
     keys: tuple[str, ...]
+    move_keys: tuple[str, ...]
+    stop_to_shot_ms: float | None
+    direction_change_to_shot_ms: float | None
+    opposite_tap_recent: bool
 
 
 class InputTracker:
     """Global keyboard/mouse tracker for local coaching features only."""
 
-    def __init__(self, on_shot: Callable[[ShotEvent], None] | None = None):
+    def __init__(
+        self,
+        on_shot: Callable[[ShotEvent], None] | None = None,
+        on_key_event: Callable[[KeyEvent], None] | None = None,
+    ):
         self.on_shot = on_shot
+        self.on_key_event = on_key_event
         self._lock = threading.Lock()
         self._pressed: set[str] = set()
         self._keyboard_listener: keyboard.Listener | None = None
         self._mouse_listener: mouse.Listener | None = None
         self._running = False
+        self._last_move_release_ts: float | None = None
+        self._last_direction_change_ts: float | None = None
+        self._last_direction_key: str | None = None
+        self._last_opposite_tap_ts: float | None = None
 
     @property
     def running(self) -> bool:
@@ -35,32 +59,98 @@ class InputTracker:
 
     def _key_name(self, key) -> str | None:
         try:
-            if key.char:
-                return str(key.char).lower()
-        except AttributeError:
-            return None
-        return None
+            char = getattr(key, "char", None)
+            if char:
+                return str(char).lower()
+        except Exception:
+            pass
+
+        special = {
+            keyboard.Key.shift: "shift",
+            keyboard.Key.shift_l: "shift",
+            keyboard.Key.shift_r: "shift",
+            keyboard.Key.ctrl: "ctrl",
+            keyboard.Key.ctrl_l: "ctrl",
+            keyboard.Key.ctrl_r: "ctrl",
+        }
+        return special.get(key)
+
+    def _emit_key(self, timestamp: float, name: str, pressed: bool, keys: tuple[str, ...]) -> None:
+        if self.on_key_event:
+            self.on_key_event(KeyEvent(timestamp=timestamp, key=name, pressed=pressed, keys=keys))
 
     def _on_press(self, key) -> None:
         name = self._key_name(key)
-        if name:
-            with self._lock:
-                self._pressed.add(name)
+        if not name:
+            return
+        now = time.time()
+        with self._lock:
+            already_pressed = name in self._pressed
+            self._pressed.add(name)
+
+            if name in MOVE_KEYS and not already_pressed:
+                if self._last_direction_key and self._last_direction_key != name:
+                    self._last_direction_change_ts = now
+                    if OPPOSITE_KEYS.get(self._last_direction_key) == name:
+                        self._last_opposite_tap_ts = now
+                self._last_direction_key = name
+            keys = tuple(sorted(self._pressed))
+
+        if not already_pressed:
+            self._emit_key(now, name, True, keys)
 
     def _on_release(self, key) -> None:
         name = self._key_name(key)
-        if name:
-            with self._lock:
-                self._pressed.discard(name)
+        if not name:
+            return
+        now = time.time()
+        with self._lock:
+            was_pressed = name in self._pressed
+            self._pressed.discard(name)
+            if name in MOVE_KEYS and was_pressed:
+                self._last_move_release_ts = now
+            keys = tuple(sorted(self._pressed))
+        if was_pressed:
+            self._emit_key(now, name, False, keys)
 
     def _on_click(self, _x, _y, button, pressed) -> None:
         if not pressed or button != mouse.Button.left:
             return
+        now = time.time()
         with self._lock:
             keys = tuple(sorted(self._pressed))
-        moving = any(key in MOVE_KEYS for key in keys)
+            move_keys = tuple(sorted(key for key in self._pressed if key in MOVE_KEYS))
+            moving = bool(move_keys)
+            walking = "shift" in self._pressed
+            crouching = "ctrl" in self._pressed
+
+            stop_to_shot_ms = None
+            if not moving and self._last_move_release_ts is not None:
+                stop_to_shot_ms = max(0.0, (now - self._last_move_release_ts) * 1000.0)
+
+            direction_change_to_shot_ms = None
+            if self._last_direction_change_ts is not None:
+                direction_change_to_shot_ms = max(0.0, (now - self._last_direction_change_ts) * 1000.0)
+
+            opposite_recent = bool(
+                self._last_opposite_tap_ts is not None
+                and (now - self._last_opposite_tap_ts) <= 0.35
+            )
+
         if self.on_shot:
-            self.on_shot(ShotEvent(timestamp=time.time(), moving=moving, keys=keys))
+            self.on_shot(
+                ShotEvent(
+                    timestamp=now,
+                    moving=moving,
+                    walking=walking,
+                    crouching=crouching,
+                    keys=keys,
+                    move_keys=move_keys,
+                    stop_to_shot_ms=stop_to_shot_ms,
+                    direction_change_to_shot_ms=direction_change_to_shot_ms,
+                    opposite_tap_recent=opposite_recent,
+                )
+            )
 
     def is_moving(self) -> bool:
         with self._lock:
