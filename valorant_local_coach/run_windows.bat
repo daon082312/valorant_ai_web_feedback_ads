@@ -5,5 +5,5 @@ if not exist .venv (
 )
 call .venv\Scripts\activate
 python -m pip install -r requirements.txt
-python app_v5.py
+python app_v5_fixed.py
 pause
