@@ -22,41 +22,40 @@ class ShotConfirmation:
     timestamp: float
     confidence: float
     change_score: float
+    ammo_before: int | None = None
+    ammo_after: int | None = None
 
 
 class AmmoShotDetector:
-    """Confirm actual firing from ammo-HUD state changes.
+    """Count actual bullets from ammo-HUD number decreases.
 
-    Mouse input is only firing intent. A round is counted only when the bottom-right
-    ammo HUD also changes while firing is held or immediately after a click.
+    Mouse input is only a firing hint. A decrease such as 25 -> 22 produces
+    three confirmations, while reloads / weapon switches that increase ammo
+    produce none. Uncertain OCR is ignored instead of inventing shots.
     """
 
     def __init__(self, config: dict):
         self._lock = threading.Lock()
-        self._previous: np.ndarray | None = None
         self._last_process_ts = 0.0
-        self._last_shot_ts = 0.0
         self._armed_until = 0.0
-        self._noise = 0.15
+        self._last_ammo: int | None = None
+        self._digit_templates = self._build_digit_templates()
         self.update_config(config)
 
     def update_config(self, config: dict) -> None:
         self.config = config
         self.enabled = bool(config.get("shot_hud_detection", True))
-        self.fps = max(6.0, min(30.0, float(config.get("shot_hud_detection_fps", 12))))
-        self.min_change = max(0.10, float(config.get("shot_hud_change_threshold", 0.55)))
-        self.max_change = max(self.min_change + 0.5, float(config.get("shot_hud_max_change", 18.0)))
-        self.cooldown = max(0.035, min(0.25, float(config.get("shot_hud_event_cooldown_seconds", 0.055))))
+        self.fps = max(6.0, min(24.0, float(config.get("shot_hud_detection_fps", 12))))
+        # Reuse the existing setting as an OCR confidence threshold for backward compatibility.
+        self.min_confidence = max(0.35, min(0.90, float(config.get("shot_hud_change_threshold", 0.55))))
         self.arm_window = max(0.15, min(1.0, float(config.get("shot_hud_candidate_window_seconds", 0.45))))
         roi = config.get("ammo_hud_roi") or DEFAULT_AMMO_ROI
         self.roi = {k: float(roi.get(k, DEFAULT_AMMO_ROI[k])) for k in ("x", "y", "w", "h")}
 
     def clear(self) -> None:
         with self._lock:
-            self._previous = None
-            self._last_shot_ts = 0.0
             self._armed_until = 0.0
-            self._noise = 0.15
+            self._last_ammo = None
         self._last_process_ts = 0.0
 
     def register_candidate(self, timestamp: float | None = None) -> None:
@@ -65,19 +64,126 @@ class AmmoShotDetector:
             self._armed_until = max(self._armed_until, ts + self.arm_window)
 
     @staticmethod
-    def _crop_binary(frame: np.ndarray, roi: dict) -> np.ndarray | None:
+    def _normalize_glyph(mask: np.ndarray, out_w: int = 26, out_h: int = 38) -> np.ndarray | None:
+        ys, xs = np.where(mask > 0)
+        if len(xs) < 5:
+            return None
+        crop = mask[int(ys.min()): int(ys.max()) + 1, int(xs.min()): int(xs.max()) + 1]
+        h, w = crop.shape[:2]
+        scale = min((out_w - 4) / max(1, w), (out_h - 4) / max(1, h))
+        nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+        resized = cv2.resize(crop, (nw, nh), interpolation=cv2.INTER_NEAREST)
+        out = np.zeros((out_h, out_w), np.uint8)
+        x, y = (out_w - nw) // 2, (out_h - nh) // 2
+        out[y:y + nh, x:x + nw] = resized
+        return out
+
+    @classmethod
+    def _build_digit_templates(cls) -> dict[int, list[np.ndarray]]:
+        result: dict[int, list[np.ndarray]] = {i: [] for i in range(10)}
+        for digit in range(10):
+            text = str(digit)
+            for font in (cv2.FONT_HERSHEY_DUPLEX, cv2.FONT_HERSHEY_SIMPLEX):
+                for scale in (0.9, 1.0, 1.1, 1.2):
+                    for thickness in (1, 2):
+                        img = np.zeros((52, 42), np.uint8)
+                        (tw, th), _ = cv2.getTextSize(text, font, scale, thickness)
+                        cv2.putText(
+                            img,
+                            text,
+                            ((42 - tw) // 2, (52 + th) // 2 - 3),
+                            font,
+                            scale,
+                            255,
+                            thickness,
+                            cv2.LINE_AA,
+                        )
+                        _, img = cv2.threshold(img, 90, 255, cv2.THRESH_BINARY)
+                        norm = cls._normalize_glyph(img)
+                        if norm is not None:
+                            result[digit].append(norm)
+        return result
+
+    def _binary_roi(self, frame: np.ndarray) -> np.ndarray | None:
         h, w = frame.shape[:2]
-        x1 = max(0, min(w - 1, int(w * roi["x"])))
-        y1 = max(0, min(h - 1, int(h * roi["y"])))
-        x2 = max(x1 + 1, min(w, int(w * (roi["x"] + roi["w"]))))
-        y2 = max(y1 + 1, min(h, int(h * (roi["y"] + roi["h"]))))
+        x1 = max(0, min(w - 1, int(w * self.roi["x"])))
+        y1 = max(0, min(h - 1, int(h * self.roi["y"])))
+        x2 = max(x1 + 1, min(w, int(w * (self.roi["x"] + self.roi["w"]))))
+        y2 = max(y1 + 1, min(h, int(h * (self.roi["y"] + self.roi["h"]))))
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             return None
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        gray = cv2.resize(gray, (112, 64), interpolation=cv2.INTER_AREA)
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
-        return cv2.threshold(gray, 155, 255, cv2.THRESH_BINARY)[1]
+        _, bw = cv2.threshold(gray, 170, 255, cv2.THRESH_BINARY)
+        return cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+
+    def _segment_digits(self, bw: np.ndarray) -> list[np.ndarray]:
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(bw, 8)
+        comps = []
+        h_total, w_total = bw.shape[:2]
+        for i in range(1, n):
+            x, y, w, h, area = [int(v) for v in stats[i]]
+            if area < 5 or h < max(7, int(h_total * 0.18)):
+                continue
+            if h > int(h_total * 0.85) or w > int(w_total * 0.45):
+                continue
+            if w / max(1, h) > 1.1:
+                continue
+            comps.append((x, y, w, h, area))
+        comps.sort(key=lambda item: item[0])
+        if len(comps) > 3:
+            comps = comps[-3:]
+        glyphs = []
+        for x, y, w, h, _area in comps:
+            norm = self._normalize_glyph(bw[y:y + h, x:x + w])
+            if norm is not None:
+                glyphs.append(norm)
+        return glyphs
+
+    @staticmethod
+    def _similarity(a: np.ndarray, b: np.ndarray) -> float:
+        af = (a > 0).astype(np.float32)
+        bf = (b > 0).astype(np.float32)
+        inter = float(np.sum(af * bf))
+        denom = float(np.sum(af) + np.sum(bf)) + 1e-6
+        dice = 2.0 * inter / denom
+        row_score = 1.0 - float(np.mean(np.abs(af.mean(axis=1) - bf.mean(axis=1))))
+        col_score = 1.0 - float(np.mean(np.abs(af.mean(axis=0) - bf.mean(axis=0))))
+        return max(0.0, min(1.0, 0.78 * dice + 0.11 * row_score + 0.11 * col_score))
+
+    def _classify_digit(self, glyph: np.ndarray) -> tuple[int | None, float]:
+        scores: list[tuple[float, int]] = []
+        for digit, variants in self._digit_templates.items():
+            score = max((self._similarity(glyph, tmpl) for tmpl in variants), default=0.0)
+            scores.append((score, digit))
+        scores.sort(reverse=True)
+        best, digit = scores[0]
+        second = scores[1][0] if len(scores) > 1 else 0.0
+        confidence = max(0.0, min(1.0, best * 0.88 + max(0.0, best - second) * 0.8))
+        return digit, confidence
+
+    def _read_ammo(self, frame: np.ndarray) -> tuple[int | None, float]:
+        bw = self._binary_roi(frame)
+        if bw is None:
+            return None, 0.0
+        glyphs = self._segment_digits(bw)
+        if not glyphs or len(glyphs) > 3:
+            return None, 0.0
+        digits: list[str] = []
+        confidences: list[float] = []
+        for glyph in glyphs:
+            digit, confidence = self._classify_digit(glyph)
+            if digit is None:
+                return None, 0.0
+            digits.append(str(digit))
+            confidences.append(confidence)
+        try:
+            value = int("".join(digits))
+        except ValueError:
+            return None, 0.0
+        if not 0 <= value <= 100:
+            return None, 0.0
+        return value, min(confidences) if confidences else 0.0
 
     def process(self, frame_bgr: np.ndarray, timestamp: float | None, *, firing_held: bool) -> list[ShotConfirmation]:
         ts = float(timestamp or time.time())
@@ -86,28 +192,35 @@ class AmmoShotDetector:
         if ts - self._last_process_ts < 1.0 / self.fps:
             return []
         self._last_process_ts = ts
-        current = self._crop_binary(frame_bgr, self.roi)
-        if current is None:
+
+        ammo, confidence = self._read_ammo(frame_bgr)
+        if ammo is None or confidence < self.min_confidence:
             return []
+
         with self._lock:
-            previous = self._previous
-            self._previous = current
+            previous = self._last_ammo
+            self._last_ammo = int(ammo)
             armed = bool(firing_held or ts <= self._armed_until)
-            last_shot = self._last_shot_ts
-            noise = self._noise
-        if previous is None or previous.shape != current.shape:
+
+        if previous is None:
             return []
-        xor = cv2.bitwise_xor(previous, current)
-        change_score = float(cv2.countNonZero(xor)) * 100.0 / float(xor.size)
-        if not armed:
-            with self._lock:
-                self._noise = self._noise * 0.95 + min(change_score, 3.0) * 0.05
+
+        delta = int(previous) - int(ammo)
+        if delta <= 0:
+            # Equal = no shot; increase = reload or weapon switch.
             return []
-        threshold = max(self.min_change, noise * 3.0 + 0.15)
-        if ts - last_shot < self.cooldown or change_score < threshold or change_score > self.max_change:
+        if not armed or delta > 15:
+            # Large drops without firing intent are more likely weapon/HUD transitions.
             return []
-        confidence = max(0.55, min(0.99, 0.58 + (change_score - threshold) / max(2.5, threshold * 5.0)))
-        with self._lock:
-            self._last_shot_ts = ts
-            self._noise = max(0.10, self._noise * 0.82)
-        return [ShotConfirmation(ts, round(confidence, 3), round(change_score, 3))]
+
+        # Return one confirmation per bullet so existing fight/movement accounting stays compatible.
+        return [
+            ShotConfirmation(
+                timestamp=ts,
+                confidence=round(confidence, 3),
+                change_score=float(delta),
+                ammo_before=int(previous),
+                ammo_after=int(ammo),
+            )
+            for _ in range(delta)
+        ]
