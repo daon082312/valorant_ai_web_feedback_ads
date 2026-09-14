@@ -21,10 +21,11 @@ class CombatEvent:
     kind: str
     confidence: float
     score: float
+    source: str = "self_hud"
 
 
 class CombatEventDetector:
-    """Conservative local HUD-change detector for self kill/death events."""
+    """Conservative screen-only detector for the local player's kill/death."""
 
     def __init__(self, config: dict):
         self._lock = threading.Lock()
@@ -51,6 +52,7 @@ class CombatEventDetector:
         self._death_evidence = 0
         self._last_kill_ts = 0.0
         self._last_death_ts = 0.0
+        self._last_alive_hud_ts = 0.0
         with self._lock:
             self._events.clear()
 
@@ -74,9 +76,21 @@ class CombatEventDetector:
         return float(np.mean(cv2.absdiff(a, b)))
 
     @staticmethod
-    def _edge_density(gray: np.ndarray) -> float:
+    def _edge_density(gray: np.ndarray | None) -> float:
+        if gray is None:
+            return 0.0
         edge = cv2.Canny(gray, 55, 130)
         return float(np.count_nonzero(edge)) / float(edge.size)
+
+    @staticmethod
+    def _hud_content(gray: np.ndarray | None) -> float:
+        if gray is None or gray.size == 0:
+            return 0.0
+        contrast = float(np.std(gray))
+        edge = cv2.Canny(gray, 55, 130)
+        edge_ratio = float(np.count_nonzero(edge)) / float(edge.size)
+        bright = float(np.count_nonzero(gray >= 165)) / float(gray.size)
+        return contrast * 0.65 + edge_ratio * 100.0 + bright * 22.0
 
     def process(self, frame_bgr: np.ndarray, timestamp: float | None = None, *, recent_fire: bool = False) -> list[CombatEvent]:
         ts = float(timestamp or time.time())
@@ -86,10 +100,17 @@ class CombatEventDetector:
             return []
         self._last_process_ts = ts
 
-        kill = self._crop(frame_bgr, 0.43, 0.60, 0.14, 0.18, (84, 72))
+        kill = self._crop(frame_bgr, 0.455, 0.605, 0.090, 0.150, (72, 76))
         death = self._crop(frame_bgr, 0.72, 0.18, 0.27, 0.66, (96, 112))
-        if kill is None or death is None:
+        ammo = self._crop(frame_bgr, 0.855, 0.835, 0.14, 0.16, (80, 64))
+        if kill is None or death is None or ammo is None:
             return []
+
+        ammo_content = self._hud_content(ammo)
+        alive_hud = ammo_content >= 10.5
+        if alive_hud:
+            self._last_alive_hud_ts = ts
+        recently_alive = (ts - self._last_alive_hud_ts) <= 2.6
 
         out: list[CombatEvent] = []
         if self._kill_base is None:
@@ -103,36 +124,35 @@ class CombatEventDetector:
         death_edges = self._edge_density(death)
 
         if not recent_fire and self._kill_evidence == 0:
-            self._kill_base = cv2.addWeighted(self._kill_base, 0.94, kill, 0.06, 0)
-            self._kill_noise = self._kill_noise * 0.94 + min(kill_change, 8.0) * 0.06
-        if self._death_evidence == 0 and death_change < max(self.death_threshold, self._death_noise * 3.0):
-            self._death_base = cv2.addWeighted(self._death_base, 0.97, death, 0.03, 0)
+            self._kill_base = cv2.addWeighted(self._kill_base, 0.95, kill, 0.05, 0)
+            self._kill_noise = self._kill_noise * 0.95 + min(kill_change, 8.0) * 0.05
+        if self._death_evidence == 0 and alive_hud and death_change < max(self.death_threshold, self._death_noise * 3.0):
+            self._death_base = cv2.addWeighted(self._death_base, 0.98, death, 0.02, 0)
             self._death_noise = self._death_noise * 0.96 + min(death_change, 9.0) * 0.04
 
-        kill_gate = max(self.kill_threshold, self._kill_noise * 3.2 + 1.5)
-        if recent_fire and ts - self._last_kill_ts >= self.kill_cooldown and kill_change >= kill_gate and kill_edges >= 0.055:
+        kill_gate = max(self.kill_threshold, self._kill_noise * 3.4 + 1.8)
+        if recent_fire and ts - self._last_kill_ts >= self.kill_cooldown and kill_change >= kill_gate and kill_edges >= 0.060:
             self._kill_evidence += 1
         else:
             self._kill_evidence = max(0, self._kill_evidence - 1)
 
         if self._kill_evidence >= 2:
-            conf = min(0.98, 0.62 + (kill_change - kill_gate) / 35.0 + min(0.12, kill_edges))
-            event = CombatEvent(ts, "kill", round(max(0.55, conf), 3), round(kill_change, 2))
-            out.append(event)
+            conf = min(0.98, 0.64 + (kill_change - kill_gate) / 34.0 + min(0.10, kill_edges))
+            out.append(CombatEvent(ts, "kill", round(max(0.58, conf), 3), round(kill_change, 2), "self_kill_confirm"))
             self._last_kill_ts = ts
             self._kill_evidence = 0
             self._kill_base = kill.copy()
 
-        death_gate = max(self.death_threshold, self._death_noise * 3.3 + 2.0)
-        if ts - self._last_death_ts >= self.death_cooldown and death_change >= death_gate and death_edges >= 0.075:
+        death_gate = max(self.death_threshold, self._death_noise * 3.5 + 2.5)
+        self_death_transition = recently_alive and not alive_hud
+        if self_death_transition and ts - self._last_death_ts >= self.death_cooldown and death_change >= death_gate and death_edges >= 0.080:
             self._death_evidence += 1
         else:
             self._death_evidence = max(0, self._death_evidence - 1)
 
-        if self._death_evidence >= 3:
-            conf = min(0.98, 0.60 + (death_change - death_gate) / 45.0 + min(0.14, death_edges))
-            event = CombatEvent(ts, "death", round(max(0.55, conf), 3), round(death_change, 2))
-            out.append(event)
+        if self._death_evidence >= 2:
+            conf = min(0.98, 0.66 + (death_change - death_gate) / 42.0 + min(0.12, death_edges))
+            out.append(CombatEvent(ts, "death", round(max(0.60, conf), 3), round(death_change, 2), "self_death_report"))
             self._last_death_ts = ts
             self._death_evidence = 0
             self._death_base = death.copy()
@@ -156,8 +176,8 @@ class CombatEventDetector:
             "deaths": len(deaths),
             "kd_ratio": round(len(kills) / max(1, len(deaths)), 2),
             "events": [
-                {"timestamp": e.timestamp, "kind": e.kind, "confidence": e.confidence, "score": e.score}
+                {"timestamp": e.timestamp, "kind": e.kind, "confidence": e.confidence, "score": e.score, "source": e.source}
                 for e in events
             ],
-            "detector": "local_hud_change_heuristic",
+            "detector": "self_only_local_hud_heuristic",
         }
