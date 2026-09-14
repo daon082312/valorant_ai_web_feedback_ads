@@ -26,9 +26,8 @@ class MatchLifecycleState:
 class MatchLifecycleDetector:
     """Low-cost, screen-only match-end detector.
 
-    It deliberately waits for a sustained transition from live gameplay HUD to a
-    large result/summary screen. Short round-end/death screens should recover to
-    gameplay/buy HUD before the confirmation window expires.
+    It waits for a sustained transition from live gameplay HUD to a relatively
+    static result/summary screen. Moving spectator/death views are rejected.
     """
 
     def __init__(self, config: dict):
@@ -42,12 +41,15 @@ class MatchLifecycleDetector:
         self.fps = max(1.0, min(5.0, float(config.get("match_end_detection_fps", 2))))
         self.confirm_seconds = max(4.0, min(15.0, float(config.get("match_end_confirm_seconds", 7.0))))
         self.result_threshold = max(12.0, float(config.get("match_end_result_threshold", 24.0)))
+        self.max_result_motion = max(2.0, min(20.0, float(config.get("match_end_max_result_motion", 7.5))))
 
     def clear(self) -> None:
         self._last_process_ts = 0.0
         self._last_gameplay_hud_ts = 0.0
         self._ever_gameplay_hud = False
         self._end_evidence = 0
+        self._prev_center = None
+        self._prev_upper = None
         self._state = MatchLifecycleState("unknown", 0.0, False, 0.0, "warming_up")
 
     @property
@@ -97,6 +99,14 @@ class MatchLifecycleDetector:
         center_score = self._content_score(center)
         upper_score = self._content_score(upper)
         result_score = center_score * 0.72 + upper_score * 0.28
+        if self._prev_center is None or self._prev_upper is None:
+            result_motion = 999.0
+        else:
+            center_motion = float(np.mean(cv2.absdiff(center, self._prev_center)))
+            upper_motion = float(np.mean(cv2.absdiff(upper, self._prev_upper)))
+            result_motion = center_motion * 0.72 + upper_motion * 0.28
+        self._prev_center = center.copy()
+        self._prev_upper = upper.copy()
 
         if gameplay_visible:
             self._ever_gameplay_hud = True
@@ -107,7 +117,7 @@ class MatchLifecycleDetector:
             state = MatchLifecycleState("unknown", 0.0, False, round(result_score, 2), "no_gameplay_seen")
         else:
             absent_for = max(0.0, ts - self._last_gameplay_hud_ts)
-            candidate = result_score >= self.result_threshold
+            candidate = result_score >= self.result_threshold and result_motion <= self.max_result_motion
             if candidate and absent_for >= 2.0:
                 self._end_evidence += 1
             else:
