@@ -57,5 +57,11 @@
   "shot_hud_max_change": 18.0,
   "shot_hud_event_cooldown_seconds": 0.055,
   "shot_hud_candidate_window_seconds": 0.45,
-  "ammo_hud_roi": {"x": 0.865, "y": 0.835, "w": 0.115, "h": 0.125}
+  "ammo_hud_roi": {"x": 0.865, "y": 0.835, "w": 0.115, "h": 0.125},
+  "game_mode_auto_detection": true,
+  "game_mode_override": "auto",
+  "game_mode_detection_fps": 3,
+  "game_mode_brawl_confirm_seconds": 6.0,
+  "game_mode_normal_confirm_seconds": 3.0,
+  "game_mode_min_samples": 12
 }
