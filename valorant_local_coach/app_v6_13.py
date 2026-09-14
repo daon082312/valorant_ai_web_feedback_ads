@@ -14,6 +14,7 @@ V613_DEFAULTS = {
     "match_end_detection_fps": 2,
     "match_end_confirm_seconds": 7.0,
     "match_end_result_threshold": 24.0,
+    "match_end_max_result_motion": 7.5,
 }
 
 
