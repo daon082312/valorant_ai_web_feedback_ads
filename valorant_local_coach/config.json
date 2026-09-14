@@ -1,0 +1,12 @@
+{
+  "capture_fps": 12,
+  "analysis_width": 960,
+  "fight_gap_seconds": 1.8,
+  "min_shots_per_fight": 2,
+  "moving_shot_warn_ratio": 0.25,
+  "long_burst_shot_count": 6,
+  "camera_motion_warn_threshold": 18.0,
+  "save_training_frames": true,
+  "training_frame_interval_ms": 120,
+  "monitor_index": 1
+}
