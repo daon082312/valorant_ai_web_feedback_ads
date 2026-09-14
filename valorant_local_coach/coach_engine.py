@@ -4,13 +4,13 @@ import json
 import statistics
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import cv2
 
-from input_tracker import KeyEvent, ShotEvent
+from input_tracker import KeyEvent, ShotEvent, SkillEvent
 from pro_profile import ProMovementProfile
 from screen_capture import FrameSample
 
@@ -31,9 +31,16 @@ class FightFeedback:
     average_motion: float
     peak_motion: float
     crouch_spray: bool
-    score: int
+    movement_score: int
+    skill_timing_score: int | None
     title: str
-    messages: list[str]
+    movement_messages: list[str]
+    skill_messages: list[str]
+    skill_uses: list[dict]
+
+    @property
+    def score(self) -> int:
+        return self.movement_score
 
 
 class CoachEngine:
@@ -44,8 +51,8 @@ class CoachEngine:
         self._lock = threading.Lock()
         self._shots: deque[ShotEvent] = deque(maxlen=5000)
         self._key_events: deque[KeyEvent] = deque(maxlen=20000)
+        self._skill_events: deque[SkillEvent] = deque(maxlen=5000)
         self._frames: deque[tuple[float, float]] = deque(maxlen=3000)
-        self._last_frame_image = None
         self._fights: list[FightFeedback] = []
         self._last_finalized_shot_ts = 0.0
         self._training_dir: Path | None = None
@@ -66,6 +73,7 @@ class CoachEngine:
             self.session_started_at = now
             self._shots.clear()
             self._key_events.clear()
+            self._skill_events.clear()
             self._frames.clear()
             self._fights.clear()
             self._last_finalized_shot_ts = 0.0
@@ -82,10 +90,13 @@ class CoachEngine:
         with self._lock:
             self._key_events.append(event)
 
+    def on_skill(self, event: SkillEvent) -> None:
+        with self._lock:
+            self._skill_events.append(event)
+
     def on_frame(self, sample: FrameSample) -> None:
         with self._lock:
             self._frames.append((sample.timestamp, sample.motion_score))
-            self._last_frame_image = sample.frame_bgr
 
             if not self._shots or not self.config.get("save_training_frames", True):
                 return
@@ -137,6 +148,72 @@ class CoachEngine:
             "crouch_spray_ratio": 1.0 if crouch_spray else 0.0,
         }
 
+    def _skill_events_for_fight_unlocked(self, start: float, end: float) -> list[SkillEvent]:
+        pre = float(self.config.get("skill_pre_fight_seconds", 4.0))
+        post = float(self.config.get("skill_post_fight_seconds", 1.5))
+        return [event for event in self._skill_events if start - pre <= event.timestamp <= end + post]
+
+    def skill_events_for_fight(self, fight: FightFeedback) -> list[SkillEvent]:
+        with self._lock:
+            return list(self._skill_events_for_fight_unlocked(fight.started_at, fight.ended_at))
+
+    def _skill_feedback(self, start: float, end: float) -> tuple[int | None, list[str], list[dict]]:
+        events = self._skill_events_for_fight_unlocked(start, end)
+        if not events:
+            return None, [
+                "이 교전 주변에는 등록된 스킬 키 입력이 없었습니다. 스킬이 꼭 필요했던 상황인지는 화면 인식 모델 없이 단정하지 않습니다."
+            ], []
+
+        uses: list[dict] = []
+        pre_count = 0
+        during_count = 0
+        late_count = 0
+        for event in events:
+            relative = event.timestamp - start
+            if event.timestamp < start - 0.15:
+                phase = "교전 전 셋업"
+                pre_count += 1
+            elif event.timestamp <= end + 0.45:
+                phase = "교전 중"
+                during_count += 1
+            else:
+                phase = "교전 후"
+                late_count += 1
+            uses.append({
+                "slot_id": event.slot_id,
+                "label": event.label,
+                "binding": event.binding,
+                "relative_seconds": round(relative, 2),
+                "phase": phase,
+                "moving": event.moving,
+                "walking": event.walking,
+                "crouching": event.crouching,
+            })
+
+        messages: list[str] = []
+        score = 82
+        if pre_count:
+            score += min(10, pre_count * 5)
+            messages.append(f"교전 전에 스킬을 {pre_count}회 사용해 진입/교전을 준비한 패턴이 기록됐습니다.")
+        if during_count:
+            messages.append(f"교전 중 스킬 사용이 {during_count}회 있었습니다. 저장된 교전 클립에서 실제 효과와 타이밍을 함께 확인하세요.")
+        if late_count and pre_count == 0 and during_count == 0:
+            score -= 15
+            messages.append(f"스킬 {late_count}회가 교전 종료 뒤에만 사용됐습니다. 필요한 스킬이었다면 반응이 늦었을 가능성을 점검하세요.")
+        elif late_count:
+            score -= min(6, late_count * 2)
+            messages.append(f"교전 후 스킬 입력도 {late_count}회 있었습니다. 후속 교전 대비인지 늦은 사용인지 클립으로 확인하세요.")
+
+        repeated = Counter(use["slot_id"] for use in uses)
+        if max(repeated.values(), default=0) >= 2:
+            messages.append("같은 스킬 슬롯의 반복 입력이 감지됐습니다. 실제 사용 성공 여부는 화면 인식 단계에서 추가 확인이 필요합니다.")
+
+        ultimate = [use for use in uses if use["slot_id"] == "ultimate"]
+        if ultimate:
+            messages.append("궁극기 입력이 기록됐습니다. 현재 버전은 키 입력 타이밍을 평가하며, 실제 킬/공간 확보 가치는 교전 영상 Vision 분석이 추가되어야 정확합니다.")
+
+        return max(0, min(100, score)), messages[:5], uses
+
     def _build_feedback(self, events: list[ShotEvent]) -> FightFeedback:
         start = events[0].timestamp
         end = events[-1].timestamp
@@ -162,28 +239,22 @@ class CoachEngine:
         if ratio >= 0.5:
             deductions += 30
             messages.append(
-                f"이 교전에서 {moving_shots}/{len(events)}발을 WASD 입력 중 발사했습니다. "
-                "첫 탄 전에 이동 입력을 끊는 타이밍을 우선 교정하세요."
+                f"이 교전에서 {moving_shots}/{len(events)}발을 WASD 입력 중 발사했습니다. 첫 탄 전에 이동 입력을 끊는 타이밍을 우선 교정하세요."
             )
         elif ratio >= moving_warn:
             deductions += 17
-            messages.append(
-                f"이동 중 발사 비율이 {ratio * 100:.0f}%입니다. 피킹과 첫 탄 사이의 정지 구간을 조금 더 분리하세요."
-            )
+            messages.append(f"이동 중 발사 비율이 {ratio * 100:.0f}%입니다. 피킹과 첫 탄 사이의 정지 구간을 조금 더 분리하세요.")
         else:
             messages.append("WASD를 끊고 사격하는 비율은 비교적 안정적이었습니다.")
 
         if walk_ratio >= float(self.config.get("walk_shot_warn_ratio", 0.18)):
             deductions += 8
-            messages.append(
-                f"Shift 워크 상태 사격이 {walk_ratio * 100:.0f}%입니다. 조용한 접근용 워크와 실제 교전 사격을 분리해 보세요."
-            )
+            messages.append(f"Shift 워크 상태 사격이 {walk_ratio * 100:.0f}%입니다. 조용한 접근용 워크와 실제 교전 사격을 분리해 보세요.")
 
         if crouch_spray:
             deductions += 12
             messages.append(
-                f"{len(events)}발 교전의 절반 이상을 Ctrl로 앉은 채 발사했습니다. "
-                "앉은 스프레이가 습관화되면 재피킹과 회피가 어려워질 수 있으니 필요할 때만 사용하세요."
+                f"{len(events)}발 교전의 절반 이상을 Ctrl로 앉은 채 발사했습니다. 앉은 스프레이가 습관화되면 재피킹과 회피가 어려워질 수 있습니다."
             )
         elif crouch_ratio >= float(self.config.get("crouch_shot_warn_ratio", 0.55)):
             deductions += 7
@@ -196,27 +267,19 @@ class CoachEngine:
             slow = float(self.config.get("stop_to_shot_slow_ms", 320))
             if stop_ms < too_fast:
                 deductions += 8
-                messages.append(
-                    f"이동키 해제 후 첫 탄까지 중앙값이 {stop_ms:.0f}ms입니다. 너무 즉시 쏘는 패턴이 있어 완전 정지 전 발사 가능성을 확인하세요."
-                )
+                messages.append(f"이동키 해제 후 첫 탄까지 중앙값이 {stop_ms:.0f}ms입니다. 너무 즉시 쏘는 패턴이 있어 완전 정지 전 발사 가능성을 확인하세요.")
             elif stop_ms > slow:
                 deductions += 5
-                messages.append(
-                    f"정지 후 첫 탄까지 중앙값이 {stop_ms:.0f}ms입니다. 정확도는 유지하되 피킹-사격 연결을 조금 더 빠르게 만들 여지가 있습니다."
-                )
+                messages.append(f"정지 후 첫 탄까지 중앙값이 {stop_ms:.0f}ms입니다. 정확도는 유지하되 피킹-사격 연결을 조금 더 빠르게 만들 여지가 있습니다.")
             else:
                 messages.append(f"정지→사격 연결 중앙값은 {stop_ms:.0f}ms였습니다.")
 
         if opposite_ratio >= 0.25:
-            messages.append(
-                f"사격 전 A↔D/W↔S 반대방향 탭이 {opposite_ratio * 100:.0f}%에서 감지되었습니다. 방향전환 후 정지 패턴을 잘 활용하고 있습니다."
-            )
+            messages.append(f"사격 전 A↔D/W↔S 반대방향 탭이 {opposite_ratio * 100:.0f}%에서 감지되었습니다. 방향전환 후 정지 패턴을 잘 활용하고 있습니다.")
 
         if len(events) >= long_burst:
             deductions += 12
-            messages.append(
-                f"한 교전에서 {len(events)}발을 연속 입력했습니다. 중거리에서는 짧은 버스트 후 재이동하는 패턴도 섞어 보세요."
-            )
+            messages.append(f"한 교전에서 {len(events)}발을 연속 입력했습니다. 중거리에서는 짧은 버스트 후 재이동하는 패턴도 섞어 보세요.")
 
         motion_warn = float(self.config.get("camera_motion_warn_threshold", 18.0))
         if avg_motion >= motion_warn:
@@ -228,13 +291,15 @@ class CoachEngine:
         if reference_notes:
             messages.append(f"참고 프로필 비교: {reference_notes[0]}")
 
-        score = max(0, min(100, 100 - deductions))
-        if score >= 88:
+        movement_score = max(0, min(100, 100 - deductions))
+        if movement_score >= 88:
             title = "프로 스타일에 가까운 안정적 무빙"
-        elif score >= 68:
+        elif movement_score >= 68:
             title = "무빙 타이밍 개선 여지"
         else:
             title = "정지/워크/앉기 타이밍 교정 필요"
+
+        skill_score, skill_messages, skill_uses = self._skill_feedback(start, end)
 
         return FightFeedback(
             started_at=start,
@@ -251,9 +316,12 @@ class CoachEngine:
             average_motion=avg_motion,
             peak_motion=peak_motion,
             crouch_spray=crouch_spray,
-            score=score,
+            movement_score=movement_score,
+            skill_timing_score=skill_score,
             title=title,
-            messages=messages[:6],
+            movement_messages=messages[:6],
+            skill_messages=skill_messages,
+            skill_uses=skill_uses,
         )
 
     def poll_finalized_fight(self) -> FightFeedback | None:
@@ -265,14 +333,17 @@ class CoachEngine:
             candidates = [shot for shot in self._shots if shot.timestamp > self._last_finalized_shot_ts]
             if not candidates:
                 return None
-            if now - candidates[-1].timestamp < gap:
-                return None
 
             group = [candidates[0]]
+            closed_by_new_group = False
             for shot in candidates[1:]:
                 if shot.timestamp - group[-1].timestamp > gap:
+                    closed_by_new_group = True
                     break
                 group.append(shot)
+
+            if not closed_by_new_group and now - group[-1].timestamp < gap:
+                return None
 
             self._last_finalized_shot_ts = group[-1].timestamp
             if len(group) < minimum:
@@ -282,8 +353,8 @@ class CoachEngine:
             self._fights.append(feedback)
             return feedback
 
-    def _key_hold_seconds(self, key: str, ended_at: float) -> float:
-        events = [event for event in self._key_events if event.key == key]
+    def _key_hold_seconds(self, key: str, ended_at: float, key_events: list[KeyEvent]) -> float:
+        events = [event for event in key_events if event.key == key]
         total = 0.0
         pressed_at: float | None = None
         for event in events:
@@ -300,6 +371,8 @@ class CoachEngine:
         with self._lock:
             fights = list(self._fights)
             shots = list(self._shots)
+            key_events = list(self._key_events)
+            skills = list(self._skill_events)
 
         ended_at = time.time()
         total_shots = len(shots)
@@ -314,7 +387,7 @@ class CoachEngine:
         stop_ms = self._median_stop_to_shot(shots)
         crouch_spray_fights = sum(1 for fight in fights if fight.crouch_spray)
         crouch_spray_ratio = crouch_spray_fights / max(1, len(fights))
-        scores = [fight.score for fight in fights]
+        scores = [fight.movement_score for fight in fights]
         average_score = round(statistics.fmean(scores), 1) if scores else None
 
         movement_metrics = {
@@ -324,8 +397,8 @@ class CoachEngine:
             "crouch_spray_ratio": crouch_spray_ratio,
             "median_stop_to_shot_ms": stop_ms,
             "opposite_tap_ratio": opposite_ratio,
-            "shift_hold_seconds": self._key_hold_seconds("shift", ended_at),
-            "ctrl_hold_seconds": self._key_hold_seconds("ctrl", ended_at),
+            "shift_hold_seconds": self._key_hold_seconds("shift", ended_at, key_events),
+            "ctrl_hold_seconds": self._key_hold_seconds("ctrl", ended_at, key_events),
         }
 
         priorities: list[str] = []
@@ -346,6 +419,7 @@ class CoachEngine:
         if not priorities:
             priorities.append("기본 무빙-사격 연결은 안정적입니다. 실제 적/크로스헤어 Vision 모델을 추가하면 더 정밀하게 평가할 수 있습니다.")
 
+        skill_counts = Counter(event.label for event in skills)
         return {
             "started_at": self.session_started_at,
             "ended_at": ended_at,
@@ -357,6 +431,10 @@ class CoachEngine:
             "moving_shot_ratio": ratio,
             "average_fight_score": average_score,
             "movement_metrics": movement_metrics,
+            "skill_usage": {
+                "total": len(skills),
+                "by_label": dict(skill_counts),
+            },
             "reference_profile": self.pro_profile.data,
             "reference_comparison": reference_notes,
             "priorities": priorities[:4],
