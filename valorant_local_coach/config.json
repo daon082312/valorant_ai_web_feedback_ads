@@ -25,5 +25,10 @@
     "skill2": {"label": "2번 스킬", "key": "e"},
     "skill3": {"label": "3번 스킬", "key": "c"},
     "ultimate": {"label": "궁극기", "key": "x"}
-  }
+  },
+  "local_ai_enabled": true,
+  "ollama_url": "http://127.0.0.1:11434",
+  "ollama_model": "qwen3:4b",
+  "ollama_timeout_seconds": 90,
+  "chat_history_messages": 10
 }
