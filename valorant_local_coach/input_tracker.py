@@ -50,6 +50,8 @@ class SkillEvent:
     walking: bool
     crouching: bool
     keys: tuple[str, ...]
+    source: str = "key_candidate"
+    confidence: float | None = None
 
 
 @dataclass(slots=True)
@@ -63,6 +65,8 @@ class ShotEvent:
     stop_to_shot_ms: float | None
     direction_change_to_shot_ms: float | None
     opposite_tap_recent: bool
+    source: str = "input"
+    confidence: float | None = None
 
 
 class InputTracker:
@@ -87,6 +91,7 @@ class InputTracker:
         self._last_direction_change_ts: float | None = None
         self._last_direction_key: str | None = None
         self._last_opposite_tap_ts: float | None = None
+        self._mouse_left_pressed = False
         self._skill_bindings: dict[str, dict] = {}
         self.set_skill_bindings(skill_bindings or {})
 
@@ -199,7 +204,6 @@ class InputTracker:
         with self._lock:
             already_pressed = name in self._pressed
             self._pressed.add(name)
-
             if name in MOVE_KEYS and not already_pressed:
                 if self._last_direction_key and self._last_direction_key != name:
                     self._last_direction_change_ts = now
@@ -207,7 +211,6 @@ class InputTracker:
                         self._last_opposite_tap_ts = now
                 self._last_direction_key = name
             keys = tuple(sorted(self._pressed))
-
         if not already_pressed:
             self._emit_key(now, name, True, keys)
             self._emit_skill(now, name, keys)
@@ -226,45 +229,38 @@ class InputTracker:
         if was_pressed:
             self._emit_key(now, name, False, keys)
 
+    def _snapshot_shot_unlocked(self, now: float, *, source: str = "input", confidence: float | None = None) -> ShotEvent:
+        keys = tuple(sorted(self._pressed))
+        move_keys = tuple(sorted(key for key in self._pressed if key in MOVE_KEYS))
+        moving = bool(move_keys)
+        walking = "shift" in self._pressed
+        crouching = "ctrl" in self._pressed
+        stop_to_shot_ms = None
+        if not moving and self._last_move_release_ts is not None:
+            stop_to_shot_ms = max(0.0, (now - self._last_move_release_ts) * 1000.0)
+        direction_change_to_shot_ms = None
+        if self._last_direction_change_ts is not None:
+            direction_change_to_shot_ms = max(0.0, (now - self._last_direction_change_ts) * 1000.0)
+        opposite_recent = bool(self._last_opposite_tap_ts is not None and (now - self._last_opposite_tap_ts) <= 0.35)
+        return ShotEvent(timestamp=now, moving=moving, walking=walking, crouching=crouching, keys=keys, move_keys=move_keys, stop_to_shot_ms=stop_to_shot_ms, direction_change_to_shot_ms=direction_change_to_shot_ms, opposite_tap_recent=opposite_recent, source=source, confidence=confidence)
+
+    def snapshot_shot_event(self, timestamp: float | None = None, *, source: str = "input", confidence: float | None = None) -> ShotEvent:
+        now = float(timestamp or time.time())
+        with self._lock:
+            return self._snapshot_shot_unlocked(now, source=source, confidence=confidence)
+
+    def is_firing(self) -> bool:
+        with self._lock:
+            return bool(self._mouse_left_pressed)
+
     def _on_click(self, _x, _y, button, pressed) -> None:
         now = time.time()
         if button == mouse.Button.left:
-            if not pressed:
-                return
             with self._lock:
-                keys = tuple(sorted(self._pressed))
-                move_keys = tuple(sorted(key for key in self._pressed if key in MOVE_KEYS))
-                moving = bool(move_keys)
-                walking = "shift" in self._pressed
-                crouching = "ctrl" in self._pressed
-
-                stop_to_shot_ms = None
-                if not moving and self._last_move_release_ts is not None:
-                    stop_to_shot_ms = max(0.0, (now - self._last_move_release_ts) * 1000.0)
-
-                direction_change_to_shot_ms = None
-                if self._last_direction_change_ts is not None:
-                    direction_change_to_shot_ms = max(0.0, (now - self._last_direction_change_ts) * 1000.0)
-
-                opposite_recent = bool(
-                    self._last_opposite_tap_ts is not None
-                    and (now - self._last_opposite_tap_ts) <= 0.35
-                )
-
-            if self.on_shot:
-                self.on_shot(
-                    ShotEvent(
-                        timestamp=now,
-                        moving=moving,
-                        walking=walking,
-                        crouching=crouching,
-                        keys=keys,
-                        move_keys=move_keys,
-                        stop_to_shot_ms=stop_to_shot_ms,
-                        direction_change_to_shot_ms=direction_change_to_shot_ms,
-                        opposite_tap_recent=opposite_recent,
-                    )
-                )
+                self._mouse_left_pressed = bool(pressed)
+                candidate = self._snapshot_shot_unlocked(now, source="mouse_candidate", confidence=None) if pressed else None
+            if pressed and candidate is not None and self.on_shot:
+                self.on_shot(candidate)
             return
 
         name = self._mouse_name(button)
@@ -278,7 +274,6 @@ class InputTracker:
                 already_pressed = name in self._pressed
                 self._pressed.discard(name)
             keys = tuple(sorted(self._pressed))
-
         if pressed and not already_pressed:
             self._emit_key(now, name, True, keys)
             self._emit_skill(now, name, keys)
@@ -297,16 +292,15 @@ class InputTracker:
         if self._running:
             return
         self._running = True
-        self._keyboard_listener = keyboard.Listener(
-            on_press=self._on_press,
-            on_release=self._on_release,
-        )
+        self._keyboard_listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
         self._mouse_listener = mouse.Listener(on_click=self._on_click)
         self._keyboard_listener.start()
         self._mouse_listener.start()
 
     def stop(self) -> None:
         self._running = False
+        with self._lock:
+            self._mouse_left_pressed = False
         if self._keyboard_listener:
             self._keyboard_listener.stop()
             self._keyboard_listener = None
