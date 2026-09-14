@@ -1,0 +1,12 @@
+{
+  "profile_name": "Pro-style starter reference",
+  "source": "heuristic_seed_not_measured_pro_data",
+  "note": "실제 프로 키입력 데이터가 아니라 초기 비교용 기준입니다. reference_sessions에서 실제 기준 세션을 학습하면 자동 교체됩니다.",
+  "moving_shot_ratio_max": 0.18,
+  "walk_shot_ratio_max": 0.12,
+  "crouch_shot_ratio_max": 0.40,
+  "crouch_spray_ratio_max": 0.28,
+  "stop_to_shot_median_ms_min": 45.0,
+  "stop_to_shot_median_ms_max": 240.0,
+  "opposite_tap_ratio_min": 0.10
+}
