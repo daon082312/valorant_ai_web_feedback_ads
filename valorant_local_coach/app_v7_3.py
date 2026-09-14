@@ -51,7 +51,12 @@ class App(v72.App):
             font=(FONT, 11),
             takefocus=True,
         )
-        self.chat_entry.pack(side="left", fill="x", expand=True, ipady=10, before=self.chat_send)
+        try:
+            self.chat_send.pack_forget()
+        except Exception:
+            pass
+        self.chat_entry.pack(side="left", fill="x", expand=True, ipady=10)
+        self.chat_send.pack(side="left", padx=(8, 0))
         self.chat_entry.bind("<Return>", self._chat_enter)
         self.chat_entry.bind("<Button-1>", lambda _e: self.after_idle(self.chat_entry.focus_force))
         self.chat_entry.bind("<FocusIn>", lambda _e: self.chat_entry.configure(highlightbackground="#ff4655"))
