@@ -24,18 +24,19 @@ class ModeState:
 
 
 class BrawlModeDetector:
-    """Conservative HUD-only detector for a no-ability brawl/deathmatch style mode.
+    """Very conservative HUD-only detector for deathmatch/brawl-style no-ability play.
 
-    The detector never reads game memory. It looks only at the captured frame and
-    requires sustained evidence before switching modes. A manual override can be
-    selected with ``game_mode_override``: auto / normal / brawl.
+    False brawl classification is intentionally treated as worse than missing a
+    brawl classification. Once any plausible skill HUD is seen in a session, auto
+    mode stays normal for that session. Manual override remains available.
     """
 
     def __init__(self, config: dict):
         self._lock = threading.Lock()
-        self._history: deque[tuple[float, bool, int]] = deque(maxlen=160)
+        self._history: deque[tuple[float, bool, int]] = deque(maxlen=320)
         self._last_process_ts = 0.0
         self._state = ModeState("unknown", 0.0, 0, False, "warming_up")
+        self._ever_skill_hud_seen = False
         self.update_config(config)
 
     def update_config(self, config: dict) -> None:
@@ -44,9 +45,9 @@ class BrawlModeDetector:
         override = str(config.get("game_mode_override", "auto")).strip().lower()
         self.override = override if override in {"auto", "normal", "brawl"} else "auto"
         self.fps = max(1.0, min(8.0, float(config.get("game_mode_detection_fps", 3))))
-        self.brawl_seconds = max(3.0, min(15.0, float(config.get("game_mode_brawl_confirm_seconds", 6.0))))
-        self.normal_seconds = max(2.0, min(10.0, float(config.get("game_mode_normal_confirm_seconds", 3.0))))
-        self.min_samples = max(6, int(config.get("game_mode_min_samples", 12)))
+        self.brawl_seconds = max(8.0, min(25.0, float(config.get("game_mode_brawl_confirm_seconds", 12.0))))
+        self.normal_seconds = max(1.0, min(8.0, float(config.get("game_mode_normal_confirm_seconds", 1.5))))
+        self.min_samples = max(12, int(config.get("game_mode_min_samples", 24)))
         self.skill_rois = config.get("skill_hud_rois") or DEFAULT_SLOT_ROIS
         self.ammo_roi = config.get("ammo_hud_roi") or DEFAULT_AMMO_ROI
 
@@ -54,6 +55,7 @@ class BrawlModeDetector:
         with self._lock:
             self._history.clear()
             self._state = ModeState("unknown", 0.0, 0, False, "warming_up")
+            self._ever_skill_hud_seen = False
         self._last_process_ts = 0.0
 
     @property
@@ -96,7 +98,7 @@ class BrawlModeDetector:
         for slot, default_roi in DEFAULT_SLOT_ROIS.items():
             roi = self.skill_rois.get(slot, default_roi) if isinstance(self.skill_rois, dict) else default_roi
             score = self._hud_content_score(self._crop(frame, roi))
-            if score >= 15.0:
+            if score >= 13.0:
                 active_slots += 1
         return gameplay_visible, active_slots
 
@@ -115,36 +117,43 @@ class BrawlModeDetector:
 
         gameplay_visible, active_slots = self._sample(frame_bgr)
         with self._lock:
+            if gameplay_visible and active_slots >= 1:
+                self._ever_skill_hud_seen = True
             self._history.append((ts, gameplay_visible, active_slots))
             cutoff = ts - max(self.brawl_seconds, self.normal_seconds) - 1.0
             while self._history and self._history[0][0] < cutoff:
                 self._history.popleft()
             history = list(self._history)
             previous = self._state.mode
+            ever_skill = self._ever_skill_hud_seen
 
         valid = [(t, slots) for t, visible, slots in history if visible]
-        if len(valid) < self.min_samples:
+        if len(valid) < max(8, self.min_samples // 2):
             state = ModeState(previous if previous != "unknown" else "unknown", 0.0, active_slots, gameplay_visible, "warming_up")
+        elif ever_skill:
+            state = ModeState("normal", 0.99, active_slots, gameplay_visible, "ability_hud_seen")
         else:
-            brawl_cut = ts - self.brawl_seconds
             normal_cut = ts - self.normal_seconds
-            brawl_samples = [slots for t, slots in valid if t >= brawl_cut]
             normal_samples = [slots for t, slots in valid if t >= normal_cut]
-            brawl_ratio = (
-                sum(1 for slots in brawl_samples if slots <= 1) / len(brawl_samples)
-                if len(brawl_samples) >= self.min_samples else 0.0
-            )
             normal_ratio = (
-                sum(1 for slots in normal_samples if slots >= 2) / len(normal_samples)
-                if len(normal_samples) >= max(6, self.min_samples // 2) else 0.0
+                sum(1 for slots in normal_samples if slots >= 1) / len(normal_samples)
+                if len(normal_samples) >= max(4, int(self.fps * self.normal_seconds * 0.6)) else 0.0
             )
-
-            if brawl_ratio >= 0.82:
-                state = ModeState("brawl", round(brawl_ratio, 3), active_slots, gameplay_visible, "ability_hud_absent")
-            elif normal_ratio >= 0.68:
+            if normal_ratio >= 0.45:
                 state = ModeState("normal", round(normal_ratio, 3), active_slots, gameplay_visible, "ability_hud_present")
             else:
-                state = ModeState(previous if previous != "unknown" else "unknown", max(brawl_ratio, normal_ratio), active_slots, gameplay_visible, "insufficient_consensus")
+                brawl_cut = ts - self.brawl_seconds
+                brawl_valid = [(t, slots) for t, slots in valid if t >= brawl_cut]
+                required = max(self.min_samples, int(self.fps * self.brawl_seconds * 0.72))
+                span = (brawl_valid[-1][0] - brawl_valid[0][0]) if len(brawl_valid) >= 2 else 0.0
+                brawl_ratio = (
+                    sum(1 for _, slots in brawl_valid if slots == 0) / len(brawl_valid)
+                    if len(brawl_valid) >= required else 0.0
+                )
+                if len(brawl_valid) >= required and span >= self.brawl_seconds * 0.80 and brawl_ratio >= 0.96:
+                    state = ModeState("brawl", round(brawl_ratio, 3), active_slots, gameplay_visible, "sustained_no_ability_hud")
+                else:
+                    state = ModeState("normal" if previous in {"normal", "unknown"} else previous, max(normal_ratio, brawl_ratio), active_slots, gameplay_visible, "conservative_normal")
 
         with self._lock:
             self._state = state
