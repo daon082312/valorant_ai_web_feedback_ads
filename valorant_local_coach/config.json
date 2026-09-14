@@ -52,14 +52,16 @@
   "game_mode_auto_detection": true,
   "game_mode_override": "auto",
   "game_mode_detection_fps": 3,
-  "game_mode_brawl_confirm_seconds": 6.0,
-  "game_mode_normal_confirm_seconds": 3.0,
-  "game_mode_min_samples": 12,
+  "game_mode_brawl_confirm_seconds": 12.0,
+  "game_mode_normal_confirm_seconds": 1.5,
+  "game_mode_min_samples": 24,
   "store_minimap_history": false,
   "combat_event_detection": true,
   "combat_event_fps": 4,
   "kill_hud_change_threshold": 10.0,
   "death_hud_change_threshold": 13.0,
   "kill_event_cooldown_seconds": 1.6,
-  "death_event_cooldown_seconds": 4.0
+  "death_event_cooldown_seconds": 4.0,
+  "personal_learning_enabled": true,
+  "gameplay_hud_confirm_seconds": 1.2
 }
