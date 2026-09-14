@@ -7,7 +7,7 @@ import customtkinter as ctk
 import app_v7_6 as v76
 
 ACCENT = v76.ACCENT
-ACCENT_HOVER = v76.ACCENT_HOVER
+ACCENT_HOVER = "#ff5d69"
 PANEL2 = v76.PANEL2
 MUTED = v76.MUTED
 FONT = v76.FONT
