@@ -47,7 +47,7 @@ class VideoCoachChat:
         return "\n".join([
             "[영상 분석 측정값]",
             f"예상 티어: {tier.get('tier_ko') or tier.get('tier')} / 티어점수: {tier.get('score')} / 신뢰도: {tier.get('confidence')}",
-            f"에임: {report.get('aim_score')} / 헤드라인: {report.get('headline_score')} / 무빙 안정성: {report.get('movement_score')} / 스킬: {report.get('skill_score')}",
+            f"에임: {report.get('aim_score')} / 에임신뢰도: {report.get('aim_confidence')} / 에임방식: {report.get('aim_method')} / 헤드라인: {report.get('headline_score')} / 무빙 안정성: {report.get('movement_score')} / 스킬: {report.get('skill_score')}",
             f"발사 추정: {report.get('confirmed_shots')} / 사격구간: {report.get('shot_burst_count')} / 모드: {report.get('mode')}",
             f"내 킬 HUD 추정: {combat.get('kills', 0)} / 내 데스 HUD 추정: {combat.get('deaths', 0)}",
             "피드백: " + " | ".join(str(x) for x in feedback[:6]),
@@ -63,7 +63,13 @@ class VideoCoachChat:
         if any(x in q for x in ("tier", "rank", "티어", "랭크")):
             return (f"Video-mechanics estimate: {tier.get('tier', 'Unrated')} ({float(tier.get('confidence',0))*100:.0f}% confidence). It is not your account rank." if english else f"영상 기계적 지표 기준 예상 티어는 {tier.get('tier_ko') or tier.get('tier') or '판정 불가'}이고 신뢰도는 {float(tier.get('confidence',0))*100:.0f}%입니다. 실제 계정 랭크를 조회한 값은 아닙니다.")
         if any(x in q for x in ("aim", "에임", "crosshair", "크로스")):
-            return (f"Aim {report.get('aim_score')}/100, head-line {report.get('headline_score')}/100. Prioritize reducing crosshair-to-head correction distance before increasing flick speed." if english else f"에임 {report.get('aim_score')}/100, 헤드라인 {report.get('headline_score')}/100입니다. 플릭 속도를 더 올리기보다 적이 보이기 전 크로스헤어를 머리 높이와 예상 위치에 두는 것을 먼저 연습하세요.")
+            aim = report.get('aim_score')
+            head = report.get('headline_score')
+            conf = float(report.get('aim_confidence') or 0.0)
+            method = report.get('aim_method') or 'unknown'
+            if aim is None:
+                return ("There is not enough reliable shot-time enemy evidence to score aim. Check the enemy outline color and review the aim event markers." if english else "신뢰할 수 있는 발사 시점+적 윤곽 근거가 부족해 에임 점수를 확정하지 않았습니다. 적 윤곽색 설정과 에임 이벤트 장면을 확인해 주세요.")
+            return (f"Aim {aim}/100, head-line {head}/100, confidence {conf*100:.0f}%, method {method}. Use the event-jump aim markers to verify the scored moments." if english else f"에임 {aim}/100, 헤드라인 {head}/100, 판정 신뢰도 {conf*100:.0f}%입니다. 판정 방식은 {method}이며, 이벤트 목록의 에임 시점으로 이동해 실제 장면과 점수가 맞는지 확인하세요.")
         if any(x in q for x in ("movement", "무빙", "spray", "스프레이")):
             return (f"Video-estimated movement/shot stability is {report.get('movement_score')}/100. This uses shot-time screen motion and burst length, not keyboard input." if english else f"영상 기반 무빙/사격 안정성은 {report.get('movement_score')}/100입니다. 실제 WASD를 읽은 값이 아니라 사격 순간 화면 움직임과 버스트 길이를 이용한 추정입니다.")
         fb = report.get("feedback") or []
@@ -79,7 +85,7 @@ class VideoCoachChat:
         prompt = (
             "You are an offline VALORANT video review coach. Use only the measured video metrics below. "
             "Never claim the predicted tier is the user's real account rank. Kill/death and skill are HUD-based estimates. "
-            "Movement score is video-estimated and does not reveal actual keyboard inputs. Answer in Korean unless language is en.\n\n"
+            "Movement score is video-estimated and does not reveal actual keyboard inputs. Aim has a method and confidence; do not overstate low-confidence aim scores. Answer in Korean unless language is en.\n\n"
             + self._context(report)
         )
         messages = [{"role": "system", "content": prompt}]
