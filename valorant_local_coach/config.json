@@ -12,5 +12,18 @@
   "camera_motion_warn_threshold": 18.0,
   "save_training_frames": true,
   "training_frame_interval_ms": 120,
-  "monitor_index": 1
+  "monitor_index": 1,
+  "record_fight_clips": true,
+  "fight_clip_pre_seconds": 4.0,
+  "fight_clip_post_seconds": 1.5,
+  "fight_record_buffer_seconds": 30.0,
+  "fight_record_jpeg_quality": 70,
+  "skill_pre_fight_seconds": 4.0,
+  "skill_post_fight_seconds": 1.5,
+  "skill_bindings": {
+    "skill1": {"label": "1번 스킬", "key": "q"},
+    "skill2": {"label": "2번 스킬", "key": "e"},
+    "skill3": {"label": "3번 스킬", "key": "c"},
+    "ultimate": {"label": "궁극기", "key": "x"}
+  }
 }
