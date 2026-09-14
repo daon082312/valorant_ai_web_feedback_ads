@@ -65,20 +65,12 @@ class ShotEvent:
     stop_to_shot_ms: float | None
     direction_change_to_shot_ms: float | None
     opposite_tap_recent: bool
-    source: str = "input"
-    confidence: float | None = None
 
 
 class InputTracker:
     """Global keyboard/mouse tracker for local coaching features only."""
 
-    def __init__(
-        self,
-        on_shot: Callable[[ShotEvent], None] | None = None,
-        on_key_event: Callable[[KeyEvent], None] | None = None,
-        on_skill: Callable[[SkillEvent], None] | None = None,
-        skill_bindings: dict[str, dict] | None = None,
-    ):
+    def __init__(self, on_shot: Callable[[ShotEvent], None] | None = None, on_key_event: Callable[[KeyEvent], None] | None = None, on_skill: Callable[[SkillEvent], None] | None = None, skill_bindings: dict[str, dict] | None = None):
         self.on_shot = on_shot
         self.on_key_event = on_key_event
         self.on_skill = on_skill
@@ -91,7 +83,9 @@ class InputTracker:
         self._last_direction_change_ts: float | None = None
         self._last_direction_key: str | None = None
         self._last_opposite_tap_ts: float | None = None
-        self._mouse_left_pressed = False
+        self._left_mouse_down = False
+        self._last_left_press_ts: float | None = None
+        self._last_left_release_ts: float | None = None
         self._skill_bindings: dict[str, dict] = {}
         self.set_skill_bindings(skill_bindings or {})
 
@@ -107,10 +101,7 @@ class InputTracker:
             key = normalize_binding(item.get("key", ""))
             if not key:
                 continue
-            cleaned[str(slot_id)] = {
-                "label": str(item.get("label") or slot_id).strip() or str(slot_id),
-                "key": key,
-            }
+            cleaned[str(slot_id)] = {"label": str(item.get("label") or slot_id).strip() or str(slot_id), "key": key}
         with self._lock:
             self._skill_bindings = cleaned
 
@@ -125,26 +116,9 @@ class InputTracker:
                 return normalize_binding(str(char))
         except Exception:
             pass
-
-        special = {
-            keyboard.Key.shift: "shift",
-            keyboard.Key.shift_l: "shift",
-            keyboard.Key.shift_r: "shift",
-            keyboard.Key.ctrl: "ctrl",
-            keyboard.Key.ctrl_l: "ctrl",
-            keyboard.Key.ctrl_r: "ctrl",
-            keyboard.Key.alt: "alt",
-            keyboard.Key.alt_l: "alt",
-            keyboard.Key.alt_r: "alt",
-            keyboard.Key.space: "space",
-            keyboard.Key.tab: "tab",
-            keyboard.Key.caps_lock: "caps_lock",
-            keyboard.Key.enter: "enter",
-            keyboard.Key.esc: "esc",
-        }
+        special = {keyboard.Key.shift: "shift", keyboard.Key.shift_l: "shift", keyboard.Key.shift_r: "shift", keyboard.Key.ctrl: "ctrl", keyboard.Key.ctrl_l: "ctrl", keyboard.Key.ctrl_r: "ctrl", keyboard.Key.alt: "alt", keyboard.Key.alt_l: "alt", keyboard.Key.alt_r: "alt", keyboard.Key.space: "space", keyboard.Key.tab: "tab", keyboard.Key.caps_lock: "caps_lock", keyboard.Key.enter: "enter", keyboard.Key.esc: "esc"}
         if key in special:
             return special[key]
-
         name = getattr(key, "name", None)
         if name:
             return normalize_binding(str(name))
@@ -152,10 +126,7 @@ class InputTracker:
 
     @staticmethod
     def _mouse_name(button) -> str | None:
-        mapping = {
-            mouse.Button.middle: "middle",
-            mouse.Button.right: "right_mouse",
-        }
+        mapping = {mouse.Button.middle: "middle", mouse.Button.right: "right_mouse"}
         x1 = getattr(mouse.Button, "x1", None)
         x2 = getattr(mouse.Button, "x2", None)
         if x1 is not None:
@@ -183,18 +154,7 @@ class InputTracker:
             return
         slot_id, item = matched
         move_keys = {key for key in keys if key in MOVE_KEYS}
-        self.on_skill(
-            SkillEvent(
-                timestamp=timestamp,
-                slot_id=slot_id,
-                label=str(item.get("label") or slot_id),
-                binding=name,
-                moving=bool(move_keys),
-                walking="shift" in keys,
-                crouching="ctrl" in keys,
-                keys=keys,
-            )
-        )
+        self.on_skill(SkillEvent(timestamp=timestamp, slot_id=slot_id, label=str(item.get("label") or slot_id), binding=name, moving=bool(move_keys), walking="shift" in keys, crouching="ctrl" in keys, keys=keys))
 
     def _on_press(self, key) -> None:
         name = self._key_name(key)
@@ -229,38 +189,32 @@ class InputTracker:
         if was_pressed:
             self._emit_key(now, name, False, keys)
 
-    def _snapshot_shot_unlocked(self, now: float, *, source: str = "input", confidence: float | None = None) -> ShotEvent:
-        keys = tuple(sorted(self._pressed))
-        move_keys = tuple(sorted(key for key in self._pressed if key in MOVE_KEYS))
-        moving = bool(move_keys)
-        walking = "shift" in self._pressed
-        crouching = "ctrl" in self._pressed
-        stop_to_shot_ms = None
-        if not moving and self._last_move_release_ts is not None:
-            stop_to_shot_ms = max(0.0, (now - self._last_move_release_ts) * 1000.0)
-        direction_change_to_shot_ms = None
-        if self._last_direction_change_ts is not None:
-            direction_change_to_shot_ms = max(0.0, (now - self._last_direction_change_ts) * 1000.0)
-        opposite_recent = bool(self._last_opposite_tap_ts is not None and (now - self._last_opposite_tap_ts) <= 0.35)
-        return ShotEvent(timestamp=now, moving=moving, walking=walking, crouching=crouching, keys=keys, move_keys=move_keys, stop_to_shot_ms=stop_to_shot_ms, direction_change_to_shot_ms=direction_change_to_shot_ms, opposite_tap_recent=opposite_recent, source=source, confidence=confidence)
-
-    def snapshot_shot_event(self, timestamp: float | None = None, *, source: str = "input", confidence: float | None = None) -> ShotEvent:
-        now = float(timestamp or time.time())
-        with self._lock:
-            return self._snapshot_shot_unlocked(now, source=source, confidence=confidence)
-
-    def is_firing(self) -> bool:
-        with self._lock:
-            return bool(self._mouse_left_pressed)
-
     def _on_click(self, _x, _y, button, pressed) -> None:
         now = time.time()
         if button == mouse.Button.left:
             with self._lock:
-                self._mouse_left_pressed = bool(pressed)
-                candidate = self._snapshot_shot_unlocked(now, source="mouse_candidate", confidence=None) if pressed else None
-            if pressed and candidate is not None and self.on_shot:
-                self.on_shot(candidate)
+                self._left_mouse_down = bool(pressed)
+                if pressed:
+                    self._last_left_press_ts = now
+                else:
+                    self._last_left_release_ts = now
+            if not pressed:
+                return
+            with self._lock:
+                keys = tuple(sorted(self._pressed))
+                move_keys = tuple(sorted(key for key in self._pressed if key in MOVE_KEYS))
+                moving = bool(move_keys)
+                walking = "shift" in self._pressed
+                crouching = "ctrl" in self._pressed
+                stop_to_shot_ms = None
+                if not moving and self._last_move_release_ts is not None:
+                    stop_to_shot_ms = max(0.0, (now - self._last_move_release_ts) * 1000.0)
+                direction_change_to_shot_ms = None
+                if self._last_direction_change_ts is not None:
+                    direction_change_to_shot_ms = max(0.0, (now - self._last_direction_change_ts) * 1000.0)
+                opposite_recent = bool(self._last_opposite_tap_ts is not None and (now - self._last_opposite_tap_ts) <= 0.35)
+            if self.on_shot:
+                self.on_shot(ShotEvent(timestamp=now, moving=moving, walking=walking, crouching=crouching, keys=keys, move_keys=move_keys, stop_to_shot_ms=stop_to_shot_ms, direction_change_to_shot_ms=direction_change_to_shot_ms, opposite_tap_recent=opposite_recent))
             return
 
         name = self._mouse_name(button)
@@ -279,6 +233,15 @@ class InputTracker:
             self._emit_skill(now, name, keys)
         elif not pressed and already_pressed:
             self._emit_key(now, name, False, keys)
+
+    def fire_hint_active(self, timestamp: float | None = None, grace_seconds: float = 0.28) -> bool:
+        now = float(timestamp or time.time())
+        with self._lock:
+            if self._left_mouse_down:
+                return True
+            if self._last_left_press_ts is None:
+                return False
+            return (now - self._last_left_press_ts) <= max(0.05, float(grace_seconds))
 
     def is_moving(self) -> bool:
         with self._lock:
@@ -299,8 +262,6 @@ class InputTracker:
 
     def stop(self) -> None:
         self._running = False
-        with self._lock:
-            self._mouse_left_pressed = False
         if self._keyboard_listener:
             self._keyboard_listener.stop()
             self._keyboard_listener = None
