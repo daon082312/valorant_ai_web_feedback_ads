@@ -4,13 +4,13 @@ if not exist .venv (
   py -3 -m venv .venv
 )
 call .venv\Scripts\activate
-pip install -r requirements.txt
-pyinstaller --noconfirm --clean --windowed --name ValorantLocalCoach --add-data "config.json;." main.py
-if %errorlevel% neq 0 (
-  echo Build failed.
-  pause
-  exit /b %errorlevel%
+python -m pip install -r requirements.txt
+python -m pip install pyinstaller
+pyinstaller --noconfirm --clean --windowed --name ValorantLocalCoach app_v4.py
+if exist dist\ValorantLocalCoach.exe (
+  echo.
+  echo Build complete: dist\ValorantLocalCoach.exe
+) else (
+  echo Build failed. Check the output above.
 )
-echo.
-echo EXE created: dist\ValorantLocalCoach\ValorantLocalCoach.exe or dist\ValorantLocalCoach.exe
 pause
