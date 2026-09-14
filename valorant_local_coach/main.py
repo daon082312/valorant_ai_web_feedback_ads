@@ -3,15 +3,18 @@ from __future__ import annotations
 import json
 import queue
 import sys
+import threading
 import time
 import tkinter as tk
+from dataclasses import asdict
 from pathlib import Path
 from tkinter import messagebox, ttk
 
 from PIL import Image, ImageTk
 
 from coach_engine import CoachEngine, FightFeedback
-from input_tracker import InputTracker, KeyEvent, ShotEvent
+from fight_recorder import FightRecorder
+from input_tracker import InputTracker, KeyEvent, ShotEvent, SkillEvent, normalize_binding
 from pro_profile import learn_profile_from_sessions
 from screen_capture import FrameSample, ScreenCapture
 
@@ -21,6 +24,24 @@ WORK_DIR = Path.cwd() if getattr(sys, "frozen", False) else Path(__file__).resol
 CONFIG_PATH = WORK_DIR / "config.json"
 PROFILE_PATH = WORK_DIR / "pro_baseline.json"
 REFERENCE_DIR = WORK_DIR / "data" / "reference_sessions"
+CLIP_DIR = WORK_DIR / "data" / "fight_clips"
+
+BG = "#0b0e13"
+PANEL = "#151922"
+PANEL2 = "#1c222d"
+BORDER = "#2b323f"
+MUTED = "#9ba5b4"
+TEXT = "#f3f5f7"
+ACCENT = "#ff4655"
+ACCENT_HOVER = "#ff5b68"
+GOOD = "#59d08a"
+
+DEFAULT_SKILL_BINDINGS = {
+    "skill1": {"label": "1번 스킬", "key": "q"},
+    "skill2": {"label": "2번 스킬", "key": "e"},
+    "skill3": {"label": "3번 스킬", "key": "c"},
+    "ultimate": {"label": "궁극기", "key": "x"},
+}
 
 DEFAULT_CONFIG = {
     "capture_fps": 12,
@@ -37,34 +58,71 @@ DEFAULT_CONFIG = {
     "save_training_frames": True,
     "training_frame_interval_ms": 120,
     "monitor_index": 1,
+    "record_fight_clips": True,
+    "fight_clip_pre_seconds": 4.0,
+    "fight_clip_post_seconds": 1.5,
+    "fight_record_buffer_seconds": 30.0,
+    "fight_record_jpeg_quality": 70,
+    "skill_pre_fight_seconds": 4.0,
+    "skill_post_fight_seconds": 1.5,
+    "skill_bindings": DEFAULT_SKILL_BINDINGS,
 }
+
+
+def _merged_skill_bindings(value) -> dict:
+    merged = {slot: dict(item) for slot, item in DEFAULT_SKILL_BINDINGS.items()}
+    if isinstance(value, dict):
+        for slot, item in value.items():
+            if slot in merged and isinstance(item, dict):
+                merged[slot].update(item)
+    return merged
 
 
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
-        CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, indent=2), encoding="utf-8")
-        return dict(DEFAULT_CONFIG)
+        data = dict(DEFAULT_CONFIG)
+        data["skill_bindings"] = _merged_skill_bindings(None)
+        CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return data
     try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        return {**DEFAULT_CONFIG, **data}
+        raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        data = {**DEFAULT_CONFIG, **raw}
+        data["skill_bindings"] = _merged_skill_bindings(raw.get("skill_bindings"))
+        return data
     except Exception:
-        return dict(DEFAULT_CONFIG)
+        data = dict(DEFAULT_CONFIG)
+        data["skill_bindings"] = _merged_skill_bindings(None)
+        return data
+
+
+def save_config(config: dict) -> None:
+    CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("VALORANT Local Coach v2 · Movement")
-        self.geometry("1120x800")
-        self.minsize(940, 680)
+        self.title("VALORANT Local Coach · Movement & Utility")
+        self.geometry("1240x860")
+        self.minsize(1000, 720)
+        self.configure(bg=BG)
 
         REFERENCE_DIR.mkdir(parents=True, exist_ok=True)
+        CLIP_DIR.mkdir(parents=True, exist_ok=True)
         self.config_data = load_config()
         self.engine = CoachEngine(self.config_data, WORK_DIR)
+        self.recorder = FightRecorder(
+            WORK_DIR,
+            fps=int(self.config_data["capture_fps"]),
+            buffer_seconds=float(self.config_data["fight_record_buffer_seconds"]),
+            jpeg_quality=int(self.config_data["fight_record_jpeg_quality"]),
+        )
         self.event_queue: queue.Queue = queue.Queue()
         self.input_tracker = InputTracker(
             on_shot=self._thread_shot,
             on_key_event=self._thread_key,
+            on_skill=self._thread_skill,
+            skill_bindings=self.config_data["skill_bindings"],
         )
         self.capture = ScreenCapture(
             on_frame=self._thread_frame,
@@ -78,81 +136,184 @@ class App(tk.Tk):
         self.moving_shot_count = 0
         self.walk_shot_count = 0
         self.crouch_shot_count = 0
+        self.skill_count = 0
 
+        self._setup_styles()
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(50, self._drain_events)
         self.after(300, self._poll_fights)
 
+    def _setup_styles(self) -> None:
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure("Root.TFrame", background=BG)
+        style.configure("Card.TFrame", background=PANEL, bordercolor=BORDER, relief="solid", borderwidth=1)
+        style.configure("Panel2.TFrame", background=PANEL2)
+        style.configure("TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 10))
+        style.configure("Card.TLabel", background=PANEL, foreground=TEXT)
+        style.configure("Muted.Card.TLabel", background=PANEL, foreground=MUTED)
+        style.configure("Eyebrow.TLabel", background=BG, foreground=ACCENT, font=("Segoe UI", 9, "bold"))
+        style.configure("Eyebrow.Card.TLabel", background=PANEL, foreground=ACCENT, font=("Segoe UI", 9, "bold"))
+        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 28, "bold"))
+        style.configure("Subtitle.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 10))
+        style.configure("Metric.Card.TLabel", background=PANEL, foreground=TEXT, font=("Segoe UI", 14, "bold"))
+        style.configure("MetricName.Card.TLabel", background=PANEL, foreground=MUTED, font=("Segoe UI", 9, "bold"))
+        style.configure("Section.Card.TLabel", background=PANEL, foreground=TEXT, font=("Segoe UI", 12, "bold"))
+        style.configure("Status.Card.TLabel", background=PANEL2, foreground=TEXT, font=("Segoe UI", 9, "bold"), padding=(10, 6))
+        style.configure("TEntry", fieldbackground=PANEL2, foreground=TEXT, insertcolor=TEXT, bordercolor=BORDER)
+        style.map("TEntry", fieldbackground=[("focus", PANEL2)], foreground=[("focus", TEXT)])
+
+    def _button(self, parent, text: str, command, primary: bool = False, width: int | None = None):
+        button = tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=ACCENT if primary else PANEL2,
+            fg="white",
+            activebackground=ACCENT_HOVER if primary else "#252d39",
+            activeforeground="white",
+            relief="flat",
+            bd=0,
+            padx=14,
+            pady=9,
+            font=("Segoe UI", 10, "bold"),
+            cursor="hand2",
+            disabledforeground="#737b88",
+        )
+        if width:
+            button.configure(width=width)
+        return button
+
+    def _card(self, parent, padding: int = 16):
+        frame = tk.Frame(parent, bg=PANEL, highlightthickness=1, highlightbackground=BORDER, bd=0)
+        inner = tk.Frame(frame, bg=PANEL, padx=padding, pady=padding)
+        inner.pack(fill="both", expand=True)
+        return frame, inner
+
     def _build_ui(self) -> None:
-        root = ttk.Frame(self, padding=14)
+        root = ttk.Frame(self, style="Root.TFrame", padding=(24, 20))
         root.pack(fill="both", expand=True)
 
-        title = ttk.Label(root, text="VALORANT Local Coach · Movement v2", font=("Segoe UI", 22, "bold"))
-        title.pack(anchor="w")
+        ttk.Label(root, text="LOCAL · POST-FIGHT AI COACHING", style="Eyebrow.TLabel").pack(anchor="w")
+        ttk.Label(root, text="VALORANT Local Coach", style="Title.TLabel").pack(anchor="w", pady=(4, 2))
         ttk.Label(
             root,
-            text="WASD + Shift + Ctrl + 사격 타이밍을 로컬에서 분석합니다. 교전 종료 후 무빙 피드백을 표시합니다.",
-        ).pack(anchor="w", pady=(2, 12))
+            text="API/Render 없이 화면·WASD·Shift·Ctrl·사격·스킬 키를 로컬 분석하고 교전을 자동 녹화합니다.",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(0, 14))
 
-        controls = ttk.Frame(root)
-        controls.pack(fill="x")
-        self.start_btn = ttk.Button(controls, text="세션 시작", command=self.start_session)
+        control_card, control = self._card(root, 14)
+        control_card.pack(fill="x", pady=(0, 12))
+
+        top_row = tk.Frame(control, bg=PANEL)
+        top_row.pack(fill="x")
+        self.start_btn = self._button(top_row, "세션 시작", self.start_session, primary=True, width=12)
         self.start_btn.pack(side="left")
-        self.stop_btn = ttk.Button(controls, text="세션 종료", command=self.stop_session, state="disabled")
-        self.stop_btn.pack(side="left", padx=8)
-        ttk.Button(controls, text="프로/기준 세션 학습", command=self.learn_reference_profile).pack(side="left")
-        ttk.Button(controls, text="설정 파일", command=self.open_config).pack(side="left", padx=(8, 0))
-        ttk.Button(controls, text="기준 폴더", command=self.open_reference_folder).pack(side="left", padx=(8, 0))
+        self.stop_btn = self._button(top_row, "세션 종료", self.stop_session, width=12)
+        self.stop_btn.configure(state="disabled")
+        self.stop_btn.pack(side="left", padx=(8, 0))
+        self._button(top_row, "스킬 키 설정", self.open_skill_settings).pack(side="left", padx=(16, 0))
+        self._button(top_row, "교전 클립", self.open_clip_folder).pack(side="left", padx=(8, 0))
+        self._button(top_row, "기준 세션 학습", self.learn_reference_profile).pack(side="left", padx=(8, 0))
 
-        self.status_var = tk.StringVar(value="대기 중")
-        ttk.Label(controls, textvariable=self.status_var).pack(side="right")
+        self.status_var = tk.StringVar(value="대기 중 · 로컬 전용")
+        ttk.Label(top_row, textvariable=self.status_var, style="Status.Card.TLabel").pack(side="right")
 
-        stats = ttk.Frame(root)
-        stats.pack(fill="x", pady=12)
-        self.shots_var = tk.StringVar(value="사격 0")
-        self.move_var = tk.StringVar(value="이동사격 0")
-        self.walk_var = tk.StringVar(value="Shift 사격 0")
-        self.crouch_var = tk.StringVar(value="Ctrl 사격 0")
-        self.fights_var = tk.StringVar(value="교전 0")
-        for variable in (self.shots_var, self.move_var, self.walk_var, self.crouch_var, self.fights_var):
-            ttk.Label(stats, textvariable=variable, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 18))
-
-        live = ttk.Frame(root)
-        live.pack(fill="x", pady=(0, 8))
-        ttk.Label(live, text="현재 입력:", font=("Segoe UI", 10, "bold")).pack(side="left")
-        self.keys_var = tk.StringVar(value="-")
-        ttk.Label(live, textvariable=self.keys_var).pack(side="left", padx=(6, 20))
+        binding_row = tk.Frame(control, bg=PANEL)
+        binding_row.pack(fill="x", pady=(12, 0))
+        tk.Label(binding_row, text="스킬 바인딩", bg=PANEL, fg=MUTED, font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.bindings_var = tk.StringVar(value=self._bindings_text())
+        tk.Label(binding_row, textvariable=self.bindings_var, bg=PANEL, fg=TEXT, font=("Segoe UI", 9)).pack(side="left", padx=(10, 0))
         self.profile_var = tk.StringVar(value=self._profile_label())
-        ttk.Label(live, textvariable=self.profile_var).pack(side="left")
+        tk.Label(binding_row, textvariable=self.profile_var, bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).pack(side="right")
 
-        body = ttk.Panedwindow(root, orient="horizontal")
+        metrics = tk.Frame(root, bg=BG)
+        metrics.pack(fill="x", pady=(0, 12))
+        self.shots_var = tk.StringVar(value="0")
+        self.move_var = tk.StringVar(value="0")
+        self.walk_var = tk.StringVar(value="0")
+        self.crouch_var = tk.StringVar(value="0")
+        self.skill_var = tk.StringVar(value="0")
+        metric_defs = [
+            ("사격", self.shots_var),
+            ("이동사격", self.move_var),
+            ("SHIFT 사격", self.walk_var),
+            ("CTRL 사격", self.crouch_var),
+            ("스킬 입력", self.skill_var),
+        ]
+        for idx, (name, variable) in enumerate(metric_defs):
+            card, inner = self._card(metrics, 12)
+            card.grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 5, 0 if idx == len(metric_defs) - 1 else 5))
+            metrics.grid_columnconfigure(idx, weight=1)
+            ttk.Label(inner, text=name, style="MetricName.Card.TLabel").pack(anchor="w")
+            ttk.Label(inner, textvariable=variable, style="Metric.Card.TLabel").pack(anchor="w", pady=(3, 0))
+
+        body = tk.PanedWindow(root, orient="horizontal", bg=BG, bd=0, sashwidth=8, sashrelief="flat")
         body.pack(fill="both", expand=True)
 
-        left = ttk.Frame(body, padding=6)
-        right = ttk.Frame(body, padding=6)
-        body.add(left, weight=3)
-        body.add(right, weight=2)
+        preview_card, preview_inner = self._card(body, 14)
+        feedback_card, feedback_inner = self._card(body, 14)
+        body.add(preview_card, stretch="always", minsize=560)
+        body.add(feedback_card, stretch="always", minsize=360)
 
-        ttk.Label(left, text="화면 미리보기", font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        self.preview = ttk.Label(left, text="세션을 시작하면 화면 캡처가 표시됩니다.", anchor="center")
-        self.preview.pack(fill="both", expand=True, pady=(8, 0))
+        preview_head = tk.Frame(preview_inner, bg=PANEL)
+        preview_head.pack(fill="x")
+        ttk.Label(preview_head, text="LIVE CAPTURE", style="Eyebrow.Card.TLabel").pack(side="left")
+        self.keys_var = tk.StringVar(value="INPUT  -")
+        tk.Label(preview_head, textvariable=self.keys_var, bg=PANEL, fg=MUTED, font=("Segoe UI", 9, "bold")).pack(side="right")
+        tk.Label(preview_inner, text="화면 미리보기", bg=PANEL, fg=TEXT, font=("Segoe UI", 14, "bold")).pack(anchor="w", pady=(5, 10))
 
-        ttk.Label(right, text="교전 후 무빙 피드백", font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        self.feedback = tk.Text(right, wrap="word", height=22, state="disabled", font=("Segoe UI", 10))
-        self.feedback.pack(fill="both", expand=True, pady=(8, 0))
-        self._append_feedback(
-            "세션을 시작한 뒤 VALORANT를 플레이하세요.\n"
-            "WASD, Shift(걷기), Ctrl(앉기), 왼쪽 클릭, 화면 움직임을 로컬에서 분석합니다.\n"
-            "※ 초기 'Pro-style' 프로필은 실제 프로 키입력 데이터가 아닌 시작용 참고 기준입니다.\n"
+        self.preview = tk.Label(
+            preview_inner,
+            text="세션을 시작하면 선택한 모니터 화면이 표시됩니다.",
+            bg="#080a0e",
+            fg=MUTED,
+            font=("Segoe UI", 10),
+            bd=0,
         )
+        self.preview.pack(fill="both", expand=True)
+
+        ttk.Label(feedback_inner, text="POST-FIGHT REVIEW", style="Eyebrow.Card.TLabel").pack(anchor="w")
+        tk.Label(feedback_inner, text="교전 후 피드백", bg=PANEL, fg=TEXT, font=("Segoe UI", 14, "bold")).pack(anchor="w", pady=(5, 10))
+        self.feedback = tk.Text(
+            feedback_inner,
+            wrap="word",
+            state="disabled",
+            font=("Segoe UI", 10),
+            bg="#11151d",
+            fg=TEXT,
+            insertbackground=TEXT,
+            selectbackground="#394151",
+            relief="flat",
+            padx=12,
+            pady=12,
+            spacing1=2,
+            spacing3=5,
+        )
+        self.feedback.pack(fill="both", expand=True)
+        self.feedback.tag_configure("heading", foreground=ACCENT, font=("Segoe UI", 11, "bold"))
+        self.feedback.tag_configure("good", foreground=GOOD)
+        self.feedback.tag_configure("muted", foreground=MUTED)
+        self._append_feedback("준비 완료\n", "heading")
+        self._append_feedback(
+            "세션을 시작하면 교전 전후 영상이 자동 저장되고, 무빙과 등록된 스킬 키 타이밍을 교전 종료 후 평가합니다.\n"
+            "스킬의 실제 적중/공간 확보 가치는 아직 키 입력 기반이므로 저장된 클립과 향후 Vision 모델로 보강합니다.\n",
+            "muted",
+        )
+
+    def _bindings_text(self) -> str:
+        parts = []
+        for slot in ("skill1", "skill2", "skill3", "ultimate"):
+            item = self.config_data.get("skill_bindings", {}).get(slot, {})
+            parts.append(f"{item.get('label', slot)}: {str(item.get('key', '-')).upper()}")
+        return "   ·   ".join(parts)
 
     def _profile_label(self) -> str:
         profile = self.engine.pro_profile.data
-        name = profile.get("profile_name", "reference")
         source = profile.get("source", "unknown")
-        suffix = "학습됨" if source == "reference_session_learning" else "초기 참고값"
-        return f"비교 기준: {name} · {suffix}"
+        suffix = "학습 기준" if source == "reference_session_learning" else "초기 참고값"
+        return f"무빙 비교: {suffix}"
 
     def _thread_shot(self, event: ShotEvent) -> None:
         self.engine.on_shot(event)
@@ -162,14 +323,23 @@ class App(tk.Tk):
         self.engine.on_key_event(event)
         self.event_queue.put(("key", event.keys))
 
+    def _thread_skill(self, event: SkillEvent) -> None:
+        self.engine.on_skill(event)
+        self.event_queue.put(("skill", event))
+
     def _thread_frame(self, sample: FrameSample) -> None:
         self.engine.on_frame(sample)
+        if self.config_data.get("record_fight_clips", True):
+            self.recorder.on_frame(sample)
         if int(sample.timestamp * 4) != int((sample.timestamp - 0.05) * 4):
             self.event_queue.put(("frame", sample.frame_bgr.copy()))
 
-    def _append_feedback(self, text: str) -> None:
+    def _append_feedback(self, text: str, tag: str | None = None) -> None:
         self.feedback.configure(state="normal")
-        self.feedback.insert("end", text)
+        if tag:
+            self.feedback.insert("end", text, tag)
+        else:
+            self.feedback.insert("end", text)
         self.feedback.see("end")
         self.feedback.configure(state="disabled")
 
@@ -177,7 +347,7 @@ class App(tk.Tk):
         import cv2
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(frame_rgb)
-        image.thumbnail((650, 500))
+        image.thumbnail((720, 520))
         self.latest_photo = ImageTk.PhotoImage(image=image)
         self.preview.configure(image=self.latest_photo, text="")
 
@@ -193,15 +363,24 @@ class App(tk.Tk):
                         self.walk_shot_count += 1
                     if payload.crouching:
                         self.crouch_shot_count += 1
-                    self.shots_var.set(f"사격 {self.shot_count}")
-                    self.move_var.set(f"이동사격 {self.moving_shot_count}")
-                    self.walk_var.set(f"Shift 사격 {self.walk_shot_count}")
-                    self.crouch_var.set(f"Ctrl 사격 {self.crouch_shot_count}")
+                    self.shots_var.set(str(self.shot_count))
+                    self.move_var.set(str(self.moving_shot_count))
+                    self.walk_var.set(str(self.walk_shot_count))
+                    self.crouch_var.set(str(self.crouch_shot_count))
+                elif kind == "skill":
+                    self.skill_count += 1
+                    self.skill_var.set(str(self.skill_count))
                 elif kind == "key":
-                    keys = [str(x).upper() for x in payload if x in {"w", "a", "s", "d", "shift", "ctrl"}]
-                    self.keys_var.set(" + ".join(keys) if keys else "-")
+                    visible = [str(x).upper() for x in payload if x in {"w", "a", "s", "d", "shift", "ctrl", "mouse4", "mouse5"}]
+                    self.keys_var.set("INPUT  " + (" + ".join(visible) if visible else "-"))
                 elif kind == "frame":
                     self._show_frame(payload)
+                elif kind == "clip_saved":
+                    video_path, metadata_path = payload
+                    if video_path:
+                        self._append_feedback(f"교전 클립 저장 · {video_path.name}\n", "muted")
+                    elif metadata_path:
+                        self._append_feedback(f"교전 메타데이터 저장 · {metadata_path.name}\n", "muted")
         except queue.Empty:
             pass
         self.after(50, self._drain_events)
@@ -211,37 +390,57 @@ class App(tk.Tk):
             fight = self.engine.poll_finalized_fight()
             if fight:
                 self._render_fight(fight)
-                self.fights_var.set(f"교전 {len(self.engine.fights)}")
+                if self.config_data.get("record_fight_clips", True):
+                    threading.Thread(target=self._save_fight_clip, args=(fight,), daemon=True).start()
         self.after(300, self._poll_fights)
+
+    def _save_fight_clip(self, fight: FightFeedback) -> None:
+        try:
+            skills = self.engine.skill_events_for_fight(fight)
+            video_path, metadata_path = self.recorder.save_fight(
+                fight.started_at,
+                fight.ended_at,
+                pre_seconds=float(self.config_data.get("fight_clip_pre_seconds", 4.0)),
+                post_seconds=float(self.config_data.get("fight_clip_post_seconds", 1.5)),
+                skill_events=skills,
+                feedback_payload=asdict(fight),
+            )
+            self.event_queue.put(("clip_saved", (video_path, metadata_path)))
+        except Exception as exc:
+            self.event_queue.put(("clip_saved", (None, None)))
+            print(f"[Recorder] clip save failed: {type(exc).__name__}: {exc}")
 
     def _render_fight(self, fight: FightFeedback) -> None:
         duration = max(0.0, fight.ended_at - fight.started_at)
         stop_text = "--" if fight.median_stop_to_shot_ms is None else f"{fight.median_stop_to_shot_ms:.0f}ms"
-        lines = [
-            f"\n[{time.strftime('%H:%M:%S')}] {fight.title} · 무빙 점수 {fight.score}/100",
-            (
-                f"사격 {fight.shots}발 · WASD중 {fight.moving_shots}발 ({fight.moving_shot_ratio * 100:.0f}%) · "
-                f"Shift {fight.walk_shots}발 · Ctrl {fight.crouch_shots}발"
-            ),
-            f"정지→사격 중앙값 {stop_text} · 반대방향 탭 {fight.opposite_tap_ratio * 100:.0f}% · 교전 {duration:.1f}초",
-        ]
-        lines.extend(f"• {message}" for message in fight.messages)
-        self._append_feedback("\n".join(lines) + "\n")
+        skill_score = "--" if fight.skill_timing_score is None else str(fight.skill_timing_score)
+
+        self._append_feedback(f"\n{time.strftime('%H:%M:%S')} · {fight.title}\n", "heading")
+        self._append_feedback(
+            f"무빙 {fight.movement_score}/100   ·   스킬 타이밍 {skill_score}/100   ·   사격 {fight.shots}발   ·   교전 {duration:.1f}s\n"
+            f"WASD중 {fight.moving_shot_ratio * 100:.0f}%   ·   Shift {fight.walk_shot_ratio * 100:.0f}%   ·   Ctrl {fight.crouch_shot_ratio * 100:.0f}%   ·   정지→첫 탄 {stop_text}\n"
+        )
+        for message in fight.movement_messages:
+            self._append_feedback(f"• 무빙 · {message}\n")
+        for message in fight.skill_messages:
+            self._append_feedback(f"• 스킬 · {message}\n")
+        if fight.skill_uses:
+            uses = " / ".join(
+                f"{use['label']}({use['binding'].upper()}, {use['relative_seconds']:+.1f}s, {use['phase']})"
+                for use in fight.skill_uses
+            )
+            self._append_feedback(f"스킬 타임라인 · {uses}\n", "muted")
 
     def start_session(self) -> None:
         if self.session_running:
             return
-        self.shot_count = 0
-        self.moving_shot_count = 0
-        self.walk_shot_count = 0
-        self.crouch_shot_count = 0
-        self.shots_var.set("사격 0")
-        self.move_var.set("이동사격 0")
-        self.walk_var.set("Shift 사격 0")
-        self.crouch_var.set("Ctrl 사격 0")
-        self.fights_var.set("교전 0")
-        self.keys_var.set("-")
+        self.shot_count = self.moving_shot_count = self.walk_shot_count = self.crouch_shot_count = self.skill_count = 0
+        for variable in (self.shots_var, self.move_var, self.walk_var, self.crouch_var, self.skill_var):
+            variable.set("0")
+        self.keys_var.set("INPUT  -")
         self.engine.start_session()
+        self.recorder.start_session()
+        self.input_tracker.set_skill_bindings(self.config_data["skill_bindings"])
         try:
             self.input_tracker.start()
             self.capture.start()
@@ -251,10 +450,10 @@ class App(tk.Tk):
             messagebox.showerror("시작 실패", str(exc))
             return
         self.session_running = True
-        self.start_btn.configure(state="disabled")
+        self.start_btn.configure(state="disabled", bg="#5e2730")
         self.stop_btn.configure(state="normal")
-        self.status_var.set("무빙 분석 중 · 로컬 전용")
-        self._append_feedback("\n=== 새 무빙 세션 시작 ===\n")
+        self.status_var.set("분석 중 · 교전 자동 녹화")
+        self._append_feedback("\n새 세션 시작\n", "heading")
 
     def stop_session(self) -> None:
         if not self.session_running:
@@ -264,30 +463,103 @@ class App(tk.Tk):
         self.capture.stop()
         path = self.engine.save_session()
         summary = self.engine.session_summary()
-        self.start_btn.configure(state="normal")
+        self.start_btn.configure(state="normal", bg=ACCENT)
         self.stop_btn.configure(state="disabled")
-        self.status_var.set("세션 종료")
-        self.keys_var.set("-")
+        self.status_var.set("세션 종료 · 저장 완료")
+        self.keys_var.set("INPUT  -")
 
         m = summary["movement_metrics"]
         score = summary["average_fight_score"]
         score_text = "--" if score is None else f"{score:.1f}"
         stop_text = "--" if m["median_stop_to_shot_ms"] is None else f"{m['median_stop_to_shot_ms']:.0f}ms"
         priorities = "\n".join(f"• {item}" for item in summary["priorities"])
-        references = "\n".join(f"• {item}" for item in summary.get("reference_comparison", [])[:3]) or "• 큰 차이 없음"
+        skill_usage = summary.get("skill_usage", {})
+        self._append_feedback("\n세션 요약\n", "heading")
         self._append_feedback(
-            "\n=== 세션 무빙 요약 ===\n"
-            f"교전 {summary['fight_count']}회 · 사격 {summary['shots']}발\n"
-            f"WASD중 사격 {m['moving_shot_ratio'] * 100:.0f}% · Shift 사격 {m['walk_shot_ratio'] * 100:.0f}% · "
-            f"Ctrl 사격 {m['crouch_shot_ratio'] * 100:.0f}%\n"
-            f"앉은 스프레이 교전 {m['crouch_spray_ratio'] * 100:.0f}% · 정지→첫 탄 {stop_text} · "
-            f"반대방향 탭 {m['opposite_tap_ratio'] * 100:.0f}%\n"
-            f"Shift 누른 시간 {m['shift_hold_seconds']:.1f}s · Ctrl 누른 시간 {m['ctrl_hold_seconds']:.1f}s\n"
-            f"평균 무빙 점수: {score_text}\n"
+            f"교전 {summary['fight_count']}회 · 사격 {summary['shots']}발 · 스킬 입력 {skill_usage.get('total', 0)}회\n"
+            f"WASD중 사격 {m['moving_shot_ratio'] * 100:.0f}% · Shift {m['walk_shot_ratio'] * 100:.0f}% · Ctrl {m['crouch_shot_ratio'] * 100:.0f}%\n"
+            f"정지→첫 탄 {stop_text} · 반대방향 탭 {m['opposite_tap_ratio'] * 100:.0f}% · 평균 무빙 점수 {score_text}\n"
             f"우선 개선:\n{priorities}\n"
-            f"기준 프로필 비교:\n{references}\n"
-            f"저장: {path}\n"
+            f"세션 JSON · {path}\n"
         )
+
+    def open_skill_settings(self) -> None:
+        dialog = tk.Toplevel(self)
+        dialog.title("스킬 키 설정")
+        dialog.geometry("560x420")
+        dialog.resizable(False, False)
+        dialog.configure(bg=BG)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        container = tk.Frame(dialog, bg=BG, padx=22, pady=20)
+        container.pack(fill="both", expand=True)
+        tk.Label(container, text="SKILL BINDINGS", bg=BG, fg=ACCENT, font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        tk.Label(container, text="스킬 키 설정", bg=BG, fg=TEXT, font=("Segoe UI", 22, "bold")).pack(anchor="w", pady=(3, 4))
+        tk.Label(
+            container,
+            text="실제 VALORANT 키 설정과 동일하게 입력하세요. 예: q, e, c, x, 1, mouse4, mouse5",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 14))
+
+        card, inner = self._card(container, 14)
+        card.pack(fill="x")
+        entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
+        headers = tk.Frame(inner, bg=PANEL)
+        headers.pack(fill="x", pady=(0, 6))
+        tk.Label(headers, text="슬롯/이름", bg=PANEL, fg=MUTED, width=26, anchor="w", font=("Segoe UI", 9, "bold")).pack(side="left")
+        tk.Label(headers, text="키", bg=PANEL, fg=MUTED, width=16, anchor="w", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(12, 0))
+
+        for slot in ("skill1", "skill2", "skill3", "ultimate"):
+            item = self.config_data["skill_bindings"].get(slot, DEFAULT_SKILL_BINDINGS[slot])
+            row = tk.Frame(inner, bg=PANEL)
+            row.pack(fill="x", pady=5)
+            label_entry = tk.Entry(row, bg=PANEL2, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 10))
+            label_entry.insert(0, str(item.get("label", slot)))
+            label_entry.pack(side="left", fill="x", expand=True, ipady=7)
+            key_entry = tk.Entry(row, bg=PANEL2, fg=TEXT, insertbackground=TEXT, relief="flat", width=15, font=("Consolas", 10, "bold"))
+            key_entry.insert(0, str(item.get("key", "")))
+            key_entry.pack(side="left", padx=(12, 0), ipady=7)
+            entries[slot] = (label_entry, key_entry)
+
+        note = tk.Label(
+            container,
+            text="같은 키를 두 스킬에 중복 지정할 수 없습니다. Mouse4/Mouse5도 지원합니다.",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 9),
+        )
+        note.pack(anchor="w", pady=(12, 0))
+
+        buttons = tk.Frame(container, bg=BG)
+        buttons.pack(fill="x", side="bottom", pady=(16, 0))
+
+        def save_bindings() -> None:
+            new_bindings = {}
+            used = set()
+            for slot, (label_entry, key_entry) in entries.items():
+                label = label_entry.get().strip() or DEFAULT_SKILL_BINDINGS[slot]["label"]
+                key = normalize_binding(key_entry.get())
+                if not key:
+                    messagebox.showerror("키 설정", f"{label}의 키를 입력해 주세요.", parent=dialog)
+                    return
+                if key in used:
+                    messagebox.showerror("키 설정", f"{key.upper()} 키가 중복 지정되어 있습니다.", parent=dialog)
+                    return
+                used.add(key)
+                new_bindings[slot] = {"label": label, "key": key}
+
+            self.config_data["skill_bindings"] = new_bindings
+            save_config(self.config_data)
+            self.input_tracker.set_skill_bindings(new_bindings)
+            self.bindings_var.set(self._bindings_text())
+            self._append_feedback("스킬 키 설정 저장 · " + self._bindings_text() + "\n", "muted")
+            dialog.destroy()
+
+        self._button(buttons, "저장", save_bindings, primary=True, width=12).pack(side="right")
+        self._button(buttons, "취소", dialog.destroy, width=12).pack(side="right", padx=(0, 8))
 
     def learn_reference_profile(self) -> None:
         if self.session_running:
@@ -297,25 +569,13 @@ class App(tk.Tk):
             profile = learn_profile_from_sessions(REFERENCE_DIR, PROFILE_PATH)
             self.engine.reload_pro_profile()
             self.profile_var.set(self._profile_label())
-            messagebox.showinfo(
-                "기준 학습 완료",
-                f"{profile.get('sample_sessions', 0)}개 기준 세션에서 무빙 프로필을 학습했습니다.\n{PROFILE_PATH}",
-            )
-            self._append_feedback(
-                f"\n기준 프로필 학습 완료 · {profile.get('sample_sessions', 0)}개 세션 사용\n"
-            )
+            messagebox.showinfo("기준 학습 완료", f"{profile.get('sample_sessions', 0)}개 기준 세션에서 무빙 프로필을 학습했습니다.")
         except Exception as exc:
-            messagebox.showerror(
-                "기준 학습 실패",
-                f"{exc}\n\n세션 JSON을 {REFERENCE_DIR} 폴더에 최소 3개 넣어 주세요.",
-            )
+            messagebox.showerror("기준 학습 실패", f"{exc}\n\n세션 JSON을 {REFERENCE_DIR} 폴더에 최소 3개 넣어 주세요.")
 
-    def open_config(self) -> None:
-        self._open_path(CONFIG_PATH)
-
-    def open_reference_folder(self) -> None:
-        REFERENCE_DIR.mkdir(parents=True, exist_ok=True)
-        self._open_path(REFERENCE_DIR)
+    def open_clip_folder(self) -> None:
+        CLIP_DIR.mkdir(parents=True, exist_ok=True)
+        self._open_path(CLIP_DIR)
 
     @staticmethod
     def _open_path(path: Path) -> None:
