@@ -50,13 +50,7 @@ class App(V66App):
             return
 
         lang = "en" if self.config_data.get("language") == "en" else "ko"
-        names = {
-            "general": "General" if lang == "en" else "일반",
-            "skills": "Skills" if lang == "en" else "스킬",
-            "vision": "Vision" if lang == "en" else "비전",
-            "ai": "AI",
-        }
-
+        names = {"general": "General" if lang == "en" else "일반", "skills": "Skills" if lang == "en" else "스킬", "vision": "Vision" if lang == "en" else "비전", "ai": "AI"}
         win = ctk.CTkToplevel(self)
         self._settings_window = win
         win.title("VALORANT Local Coach · Settings")
@@ -69,23 +63,9 @@ class App(V66App):
         head = ctk.CTkFrame(win, fg_color="transparent")
         head.pack(fill="x", padx=22, pady=(20, 8))
         ctk.CTkLabel(head, text="SETTINGS", text_color=ACCENT, font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        ctk.CTkLabel(
-            head,
-            text="설정" if lang == "ko" else "Settings",
-            text_color=TEXT,
-            font=("Segoe UI", 26, "bold"),
-        ).pack(anchor="w")
+        ctk.CTkLabel(head, text="설정" if lang == "ko" else "Settings", text_color=TEXT, font=("Segoe UI", 26, "bold")).pack(anchor="w")
 
-        tabs = ctk.CTkTabview(
-            win,
-            fg_color=PANEL,
-            segmented_button_fg_color=PANEL2,
-            segmented_button_selected_color=ACCENT,
-            segmented_button_selected_hover_color="#ff5b68",
-            corner_radius=20,
-            border_width=1,
-            border_color=BORDER,
-        )
+        tabs = ctk.CTkTabview(win, fg_color=PANEL, segmented_button_fg_color=PANEL2, segmented_button_selected_color=ACCENT, segmented_button_selected_hover_color="#ff5b68", corner_radius=20, border_width=1, border_color=BORDER)
         tabs.pack(fill="both", expand=True, padx=20, pady=(4, 12))
         frames = {key: tabs.add(names[key]) for key in ("general", "skills", "vision", "ai")}
         tabs.set(names.get(tab, names["general"]))
@@ -102,7 +82,7 @@ class App(V66App):
 
         self._settings_row_option(general, "Language / 언어", language_var, ["ko", "en"])
         self._settings_row_option(general, "Game mode / 게임 모드", mode_override_var, ["auto", "normal", "brawl"])
-        self._settings_row_option(general, "Preview FPS / 미리보기 FPS", preview_var, ["3", "4", "5", "6", "8"])
+        self._settings_row_option(general, "Preview FPS / 미리보기 FPS", preview_var, ["1", "2", "3", "4", "5", "6", "8"])
         self._settings_row_option(general, "Vision FPS", vision_fps_var, ["2", "3", "4", "5"])
         self._settings_switch(general, "Save training frames / 학습 프레임 저장 (CPU 사용 증가)", training_var)
         self._settings_switch(general, "Ammo HUD shot count / 탄약 HUD 실제 사격 감지", ammo_detect_var)
@@ -111,18 +91,7 @@ class App(V66App):
 
         skills = frames["skills"]
         skill_entries = {}
-        ctk.CTkLabel(
-            skills,
-            text=(
-                "키는 후보 슬롯을 알려줄 뿐입니다. HUD가 실제로 변해야 사용으로 기록됩니다."
-                if lang == "ko"
-                else "Keys only identify a candidate slot. A use is counted only after a HUD state change."
-            ),
-            text_color=MUTED,
-            wraplength=620,
-            justify="left",
-            font=("Segoe UI", 12),
-        ).pack(anchor="w", padx=16, pady=(16, 10))
+        ctk.CTkLabel(skills, text=("키는 후보 슬롯을 알려줄 뿐입니다. HUD가 실제로 변해야 사용으로 기록됩니다." if lang == "ko" else "Keys only identify a candidate slot. A use is counted only after a HUD state change."), text_color=MUTED, wraplength=620, justify="left", font=("Segoe UI", 12)).pack(anchor="w", padx=16, pady=(16, 10))
         for slot in ("skill1", "skill2", "skill3", "ultimate"):
             item = self.config_data.get("skill_bindings", {}).get(slot, {})
             row = ctk.CTkFrame(skills, fg_color=PANEL2, corner_radius=14)
@@ -166,7 +135,7 @@ class App(V66App):
         def save_all() -> None:
             try:
                 hud_threshold = max(2.0, float(hud_threshold_var.get()))
-                preview_fps = max(2, int(preview_var.get()))
+                preview_fps = max(1, int(preview_var.get()))
                 vision_fps = max(1, int(vision_fps_var.get()))
                 ammo_fps = max(6, int(float(ammo_fps_var.get())))
                 ammo_conf = max(0.35, min(0.95, float(ammo_conf_var.get())))
@@ -188,27 +157,7 @@ class App(V66App):
                 used.add(key)
                 new_bindings[slot] = {"label": label, "key": key}
 
-            self.config_data.update({
-                "language": language_var.get(),
-                "game_mode_override": mode_override_var.get(),
-                "preview_fps": preview_fps,
-                "vision_analysis_fps": vision_fps,
-                "save_training_frames": bool(training_var.get()),
-                "ammo_hud_detection": bool(ammo_detect_var.get()),
-                "ammo_hud_detection_fps": ammo_fps,
-                "ammo_hud_min_confidence": ammo_conf,
-                "skill_bindings": new_bindings,
-                "skill_hud_use_detection": bool(hud_detect_var.get()),
-                "skill_hud_change_threshold": hud_threshold,
-                "enemy_outline_color": enemy_var.get(),
-                "ally_outline_color": ally_var.get(),
-                "minimap_enemy_color": mm_enemy_var.get(),
-                "minimap_ally_color": mm_ally_var.get(),
-                "show_vision_boxes_in_preview": bool(boxes_var.get()),
-                "local_ai_enabled": bool(ai_enabled_var.get()),
-                "ollama_url": ai_url_var.get().strip().rstrip("/"),
-                "ollama_model": ai_model_var.get().strip() or "qwen3:4b",
-            })
+            self.config_data.update({"language": language_var.get(), "game_mode_override": mode_override_var.get(), "preview_fps": preview_fps, "vision_analysis_fps": vision_fps, "save_training_frames": bool(training_var.get()), "ammo_hud_detection": bool(ammo_detect_var.get()), "ammo_hud_detection_fps": ammo_fps, "ammo_hud_min_confidence": ammo_conf, "skill_bindings": new_bindings, "skill_hud_use_detection": bool(hud_detect_var.get()), "skill_hud_change_threshold": hud_threshold, "enemy_outline_color": enemy_var.get(), "ally_outline_color": ally_var.get(), "minimap_enemy_color": mm_enemy_var.get(), "minimap_ally_color": mm_ally_var.get(), "show_vision_boxes_in_preview": bool(boxes_var.get()), "local_ai_enabled": bool(ai_enabled_var.get()), "ollama_url": ai_url_var.get().strip().rstrip("/"), "ollama_model": ai_model_var.get().strip() or "qwen3:4b"})
             self._strip_recording_config()
             save_config(self.config_data)
             self.input_tracker.set_skill_bindings(new_bindings)
@@ -225,28 +174,8 @@ class App(V66App):
             self._settings_window = None
             win.destroy()
 
-        ctk.CTkButton(
-            footer,
-            text="Save / 저장",
-            command=save_all,
-            width=120,
-            height=40,
-            corner_radius=14,
-            fg_color=ACCENT,
-            hover_color="#ff5b68",
-            font=("Segoe UI", 12, "bold"),
-        ).pack(side="right")
-        ctk.CTkButton(
-            footer,
-            text="Cancel / 취소",
-            command=win.destroy,
-            width=110,
-            height=40,
-            corner_radius=14,
-            fg_color=PANEL2,
-            hover_color="#2a3341",
-            font=("Segoe UI", 12, "bold"),
-        ).pack(side="right", padx=(0, 8))
+        ctk.CTkButton(footer, text="Save / 저장", command=save_all, width=120, height=40, corner_radius=14, fg_color=ACCENT, hover_color="#ff5b68", font=("Segoe UI", 12, "bold")).pack(side="right")
+        ctk.CTkButton(footer, text="Cancel / 취소", command=win.destroy, width=110, height=40, corner_radius=14, fg_color=PANEL2, hover_color="#2a3341", font=("Segoe UI", 12, "bold")).pack(side="right", padx=(0, 8))
 
         def on_close() -> None:
             self._settings_window = None
