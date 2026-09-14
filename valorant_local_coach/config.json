@@ -16,10 +16,22 @@
   "skill_pre_fight_seconds": 4.0,
   "skill_post_fight_seconds": 1.5,
   "skill_bindings": {
-    "skill1": {"label": "1번 스킬", "key": "q"},
-    "skill2": {"label": "2번 스킬", "key": "e"},
-    "skill3": {"label": "3번 스킬", "key": "c"},
-    "ultimate": {"label": "궁극기", "key": "x"}
+    "skill1": {
+      "label": "1번 스킬",
+      "key": "q"
+    },
+    "skill2": {
+      "label": "2번 스킬",
+      "key": "e"
+    },
+    "skill3": {
+      "label": "3번 스킬",
+      "key": "c"
+    },
+    "ultimate": {
+      "label": "궁극기",
+      "key": "x"
+    }
   },
   "local_ai_enabled": true,
   "ollama_url": "http://127.0.0.1:11434",
@@ -33,7 +45,12 @@
   "ally_outline_color": "cyan",
   "vision_min_component_area": 16,
   "show_vision_boxes_in_preview": false,
-  "minimap_roi": {"x": 0.0, "y": 0.0, "w": 0.3, "h": 0.36},
+  "minimap_roi": {
+    "x": 0.0,
+    "y": 0.0,
+    "w": 0.3,
+    "h": 0.36
+  },
   "minimap_enemy_color": "red",
   "minimap_ally_color": "cyan",
   "preview_fps": 3,
@@ -45,7 +62,12 @@
   "ammo_hud_detection": true,
   "ammo_hud_detection_fps": 12,
   "ammo_hud_min_confidence": 0.53,
-  "ammo_hud_roi": {"x": 0.875, "y": 0.865, "w": 0.115, "h": 0.12},
+  "ammo_hud_roi": {
+    "x": 0.875,
+    "y": 0.865,
+    "w": 0.115,
+    "h": 0.12
+  },
   "video_review_fps": 6,
   "video_skill_change_threshold": 11.0,
   "video_skill_cooldown_seconds": 1.4,
@@ -63,5 +85,9 @@
   "kill_event_cooldown_seconds": 1.6,
   "death_event_cooldown_seconds": 4.0,
   "personal_learning_enabled": true,
-  "gameplay_hud_confirm_seconds": 1.2
+  "gameplay_hud_confirm_seconds": 1.2,
+  "match_end_auto_detection": true,
+  "match_end_detection_fps": 2,
+  "match_end_confirm_seconds": 7.0,
+  "match_end_result_threshold": 24.0
 }
