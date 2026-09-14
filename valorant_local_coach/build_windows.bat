@@ -6,7 +6,7 @@ if not exist .venv (
 call .venv\Scripts\activate
 python -m pip install -r requirements.txt
 python -m pip install pyinstaller
-pyinstaller --noconfirm --clean --windowed --name ValorantLocalCoach --collect-all customtkinter app_v6_5.py
+pyinstaller --noconfirm --clean --windowed --name ValorantLocalCoach --collect-all customtkinter app_v6_6.py
 if exist dist\ValorantLocalCoach.exe (
   echo.
   echo Build complete: dist\ValorantLocalCoach.exe
