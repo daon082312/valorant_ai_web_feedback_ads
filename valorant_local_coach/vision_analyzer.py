@@ -11,6 +11,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+try:
+    cv2.setNumThreads(1)
+    cv2.ocl.setUseOpenCL(False)
+except Exception:
+    pass
+
 
 @dataclass(slots=True)
 class Detection:
@@ -31,6 +37,8 @@ class VisionSample:
     minimap_allies: int
     headline_score: float | None
     headline_error_px: float | None
+    aim_score: float | None
+    aim_error_px: float | None
     detections: list[Detection]
 
 
@@ -46,12 +54,7 @@ ALLY_RANGES = {
 
 
 class VisionAnalyzer:
-    """Lightweight local CV for HUD review.
-
-    It uses color/shape heuristics rather than pretending to be a trained neural
-    detector. Low-confidence scenes return no result. The interface is separated
-    so a future ONNX/YOLO detector can replace it without changing the UI.
-    """
+    """Lightweight local CV for HUD review."""
 
     def __init__(self, root_dir: Path, config: dict):
         self.root_dir = Path(root_dir)
@@ -62,6 +65,7 @@ class VisionAnalyzer:
         self.minimap_ally_color = str(config.get('minimap_ally_color', 'cyan')).lower()
         self.vision_fps = max(1.0, min(12.0, float(config.get('vision_analysis_fps', 4))))
         self.min_component_area = max(8, int(config.get('vision_min_component_area', 16)))
+        self.store_minimap_history = bool(config.get('store_minimap_history', False))
         self._last_analysis_ts = 0.0
         self._lock = threading.Lock()
         self._samples: deque[VisionSample] = deque(maxlen=1200)
@@ -77,6 +81,7 @@ class VisionAnalyzer:
         self.minimap_ally_color = str(config.get('minimap_ally_color', 'cyan')).lower()
         self.vision_fps = max(1.0, min(12.0, float(config.get('vision_analysis_fps', 4))))
         self.min_component_area = max(8, int(config.get('vision_min_component_area', 16)))
+        self.store_minimap_history = bool(config.get('store_minimap_history', False))
 
     def clear(self) -> None:
         with self._lock:
@@ -167,26 +172,30 @@ class VisionAnalyzer:
         hsv = cv2.cvtColor(gameplay, cv2.COLOR_BGR2HSV)
         enemy_mask = self._mask_ranges(hsv, ENEMY_RANGES.get(self.enemy_color, ENEMY_RANGES['red']))
         ally_mask = self._mask_ranges(hsv, ALLY_RANGES.get(self.ally_color, ALLY_RANGES['cyan']))
-
         mx, my, mw, mh = minimap_box
         rx1 = max(0, mx - x1); ry1 = max(0, my - y1)
         rx2 = min(enemy_mask.shape[1], mx + mw - x1); ry2 = min(enemy_mask.shape[0], my + mh - y1)
         if rx2 > rx1 and ry2 > ry1:
             enemy_mask[ry1:ry2, rx1:rx2] = 0
             ally_mask[ry1:ry2, rx1:rx2] = 0
-
         enemies = self._components(enemy_mask, x1, y1, 'enemy', h)
         allies = self._components(ally_mask, x1, y1, 'ally', h)
 
         headline_score = None
         headline_error = None
+        aim_score = None
+        aim_error = None
         usable_enemies = [d for d in enemies if d.confidence >= 0.48 and d.h >= max(18, int(h * 0.035))]
         if usable_enemies:
+            crosshair_x = w / 2.0
             crosshair_y = h / 2.0
-            errors = [abs(crosshair_y - (d.y + d.h * 0.18)) for d in usable_enemies[:4]]
-            headline_error = round(min(errors), 1)
-            normalized = headline_error / max(1.0, h)
-            headline_score = round(max(0.0, min(100.0, 100.0 - normalized * 520.0)), 1)
+            head_points = [(d.x + d.w * 0.5, d.y + d.h * 0.18) for d in usable_enemies[:4]]
+            vertical_errors = [abs(crosshair_y - hy) for _hx, hy in head_points]
+            distances = [((crosshair_x - hx) ** 2 + (crosshair_y - hy) ** 2) ** 0.5 for hx, hy in head_points]
+            headline_error = round(min(vertical_errors), 1)
+            aim_error = round(min(distances), 1)
+            headline_score = round(max(0.0, min(100.0, 100.0 - (headline_error / max(1.0, h)) * 520.0)), 1)
+            aim_score = round(max(0.0, min(100.0, 100.0 - (aim_error / max(1.0, h)) * 715.0)), 1)
 
         detections = enemies + allies
         sample = VisionSample(
@@ -197,25 +206,33 @@ class VisionAnalyzer:
             minimap_allies=mm_ally,
             headline_score=headline_score,
             headline_error_px=headline_error,
+            aim_score=aim_score,
+            aim_error_px=aim_error,
             detections=detections,
         )
 
-        annotated = frame.copy()
-        for d in detections:
-            color = (70, 70, 255) if d.kind == 'enemy' else (255, 220, 50)
-            cv2.rectangle(annotated, (d.x, d.y), (d.x + d.w, d.y + d.h), color, 2)
-            cv2.putText(annotated, f'{d.kind} {d.confidence:.2f}', (d.x, max(14, d.y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
-        cv2.rectangle(annotated, (mx, my), (mx + mw, my + mh), (180, 180, 180), 1)
-        cv2.drawMarker(annotated, (w // 2, h // 2), (240, 240, 240), cv2.MARKER_CROSS, 16, 1)
+        annotated = None
+        if self.config.get('show_vision_boxes_in_preview', False):
+            annotated = frame.copy()
+            for d in detections:
+                color = (70, 70, 255) if d.kind == 'enemy' else (255, 220, 50)
+                cv2.rectangle(annotated, (d.x, d.y), (d.x + d.w, d.y + d.h), color, 2)
+                cv2.putText(annotated, f'{d.kind} {d.confidence:.2f}', (d.x, max(14, d.y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+            cv2.rectangle(annotated, (mx, my), (mx + mw, my + mh), (180, 180, 180), 1)
+            cv2.drawMarker(annotated, (w // 2, h // 2), (240, 240, 240), cv2.MARKER_CROSS, 16, 1)
 
-        ok, encoded = cv2.imencode('.jpg', minimap, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        encoded = None
+        if self.store_minimap_history:
+            ok, payload = cv2.imencode('.jpg', minimap, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+            if ok:
+                encoded = payload.tobytes()
         with self._lock:
             self._samples.append(sample)
             self._latest_minimap = minimap
             self._latest_annotated = annotated
-            if ok:
-                self._minimap_frames.append((ts, encoded.tobytes()))
-                cutoff = ts - 45.0
+            if encoded is not None:
+                self._minimap_frames.append((ts, encoded))
+                cutoff = ts - 30.0
                 while self._minimap_frames and self._minimap_frames[0][0] < cutoff:
                     self._minimap_frames.popleft()
         return sample
@@ -238,6 +255,8 @@ class VisionAnalyzer:
             samples = [s for s in self._samples if s.timestamp >= cutoff]
         headline = [float(s.headline_score) for s in samples if s.headline_score is not None]
         error = [float(s.headline_error_px) for s in samples if s.headline_error_px is not None]
+        aim = [float(s.aim_score) for s in samples if s.aim_score is not None]
+        aim_error = [float(s.aim_error_px) for s in samples if s.aim_error_px is not None]
         return {
             'sample_count': len(samples),
             'enemy_detection_frames': sum(1 for s in samples if s.enemies > 0),
@@ -248,11 +267,25 @@ class VisionAnalyzer:
             'minimap_max_allies': max((s.minimap_allies for s in samples), default=0),
             'headline_score': round(statistics.fmean(headline), 1) if headline else None,
             'headline_error_px': round(statistics.fmean(error), 1) if error else None,
+            'aim_score': round(statistics.fmean(aim), 1) if aim else None,
+            'aim_error_px': round(statistics.fmean(aim_error), 1) if aim_error else None,
             'detector': 'local_color_heuristic',
             'enemy_outline_color': self.enemy_color,
             'ally_outline_color': self.ally_color,
             'minimap_enemy_color': self.minimap_enemy_color,
             'minimap_ally_color': self.minimap_ally_color,
+        }
+
+    def aim_summary_between(self, start: float, end: float) -> dict:
+        samples = self.samples_between(start, end)
+        aim = [float(s.aim_score) for s in samples if s.aim_score is not None]
+        errors = [float(s.aim_error_px) for s in samples if s.aim_error_px is not None]
+        return {
+            'sample_count': len(samples),
+            'target_visible_samples': len(aim),
+            'aim_score': round(statistics.fmean(aim), 1) if aim else None,
+            'aim_error_px': round(statistics.fmean(errors), 1) if errors else None,
+            'best_aim_error_px': round(min(errors), 1) if errors else None,
         }
 
     def _closest_minimap(self, target: float) -> tuple[float, bytes] | None:
@@ -266,11 +299,7 @@ class VisionAnalyzer:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         mid = (fight_started + fight_ended) / 2.0
-        targets = {
-            'pre': fight_started - 1.2,
-            'fight': mid,
-            'post': fight_ended + 0.7,
-        }
+        targets = {'pre': fight_started - 1.2, 'fight': mid, 'post': fight_ended + 0.7}
         saved = {}
         for label, target in targets.items():
             item = self._closest_minimap(target)
