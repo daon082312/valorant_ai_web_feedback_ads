@@ -6,5 +6,5 @@ if not exist .venv (
 call .venv\Scripts\activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python app_v7_11.py
+python app_v7_13.py
 pause
